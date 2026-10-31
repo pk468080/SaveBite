@@ -187,8 +187,204 @@ W3 customer purchase journey (real, authenticated):
   PATCH preferences returns 501 (not persisted), so a
   form would imply settings save, which they do not.
 
-Detailed screens (listing editor, QR scanner, live
-dashboards) belong to later milestones.
+W4 merchant portal (real, authenticated; backend
+is the final permission authority — hiding a
+button is never treated as security):
+
+- `/merchant` — M10 dashboard: store selector
+  (hidden for single-store merchants, "all stores"
+  only where the endpoint supports it), date range,
+  total/paid/awaiting/collected orders, captured
+  order value (labelled as captured payments only,
+  never earnings or payouts), active listings,
+  available/reserved units, upcoming/in-window/
+  completed/window-expired pickups (window-expired
+  is never called "missed" — no no-show event
+  exists), average rating with a null-average
+  honest empty state. No-merchant users are routed
+  to onboarding, never shown operations.
+- `/merchant/onboarding` — application form using
+  only the real M3 fields (legal name, display
+  name, business type from the 10-value enum,
+  optional business email/phone). Submission
+  reports pending review; approval is admin-only
+  and never implied by the portal.
+- `/merchant/application` — per-merchant status
+  (pending_review, additional_information_required,
+  approved, rejected, suspended) plus the separate
+  verification status (pending, under_review,
+  verified, rejected, expired). Document upload is
+  honestly unavailable here (see Known
+  limitations, W4).
+- `/merchant/stores`, `/merchant/stores/new`,
+  `/merchant/stores/[storeId]`,
+  `/merchant/stores/[storeId]/hours` — store list
+  from the caller's memberships only; create with
+  the real StoreCreate validation (slug pattern,
+  6-digit pincode starting 1–9, latitude/longitude
+  both-or-neither, Indian mobile format); detail
+  assembled from the membership store lists because
+  the backend has no single-store GET endpoint;
+  weekly hours editor over weekday numbers 0–6
+  (the backend never confirms whether 0 is Monday
+  or Sunday, so day names are never guessed, and
+  M10 `open_now` stays null for the same reason).
+- `/merchant/listings`, `/merchant/listings/new`,
+  `/merchant/listings/[listingId]`,
+  `/merchant/listings/[listingId]/edit` — both
+  listing types (surprise_bag, individual_item).
+  Creation always starts as a draft (the backend
+  never accepts a client-sent status). Publish,
+  pause, resume and cancel follow the backend
+  transition map exactly (draft/scheduled →
+  active/cancelled, active → paused/cancelled,
+  paused → active/cancelled, sold_out/expired →
+  cancelled, cancelled → nothing); backend
+  refusals are shown as returned. Edit uses PATCH
+  with only updateable fields (type, store,
+  currency and counters are immutable). Available
+  quantity is the database generated value
+  (total − reserved − sold), displayed read-only.
+- Listing images — the file is first uploaded by
+  the browser to the public `listing-media` bucket
+  at `<listing_id>/<file>` (JPG/PNG/WebP, max
+  5 MB, `upsert: false`, caller's own token, bucket
+  policy authorises store operators), then
+  registered via `POST /v1/listings/{id}/images`
+  with a storage_path that must start with the
+  listing id. Images can never be edited or deleted
+  through the API (INSERT/SELECT only) and the
+  portal says so.
+- `/merchant/inventory` — read-only visibility:
+  M10 inventory summary plus the per-listing
+  table (total/reserved/sold/available, sale and
+  pickup dates, status filter). The low-stock
+  threshold input is a reporting filter only; no
+  automatic low-stock status is invented and no
+  direct inventory adjustment exists.
+- `/merchant/orders`, `/merchant/orders/[orderId]`
+  — M7 queue and detail: order number, store,
+  order/payment statuses kept distinct, order-time
+  item snapshots, pickup window, totals, real
+  timeline only. Filters: store, order status,
+  payment status, order-number search, pagination.
+  Customer email, phone and address are absent by
+  design (the merchant API excludes them) and are
+  never shown. No merchant status change, cancel
+  or refund action exists in this scope.
+- `/merchant/pickups` — `POST
+  /v1/merchant/pickups/verify` with the raw token
+  (the backend strips the `SB1:` prefix itself).
+  Camera scanning uses BarcodeDetector +
+  getUserMedia only after permission, with manual
+  token entry as the fallback for denial or
+  unsupported browsers; in-flight and last-token
+  guards stop duplicate requests from repeated
+  frames, the input is cleared after every attempt,
+  and tokens are never logged or stored. Success
+  is shown only from the backend response (order
+  number, store, collected_at, items); invalid,
+  expired, already-used, wrong-store and
+  out-of-window failures show the backend's safe
+  messages. No order is ever marked collected
+  locally.
+- `/merchant/analytics` — M10 sales buckets
+  (day/week/month grouping) with captured value
+  never labelled earnings, inventory summary,
+  pickup counts and orders, and a store comparison
+  table when the caller has more than one store.
+- `/merchant/reviews` — public visible reviews
+  only, average rating, star distribution and star
+  filter. No reviewer names exist in the contract
+  and none are invented; no edit, delete, approve,
+  hide or reply action exists for merchants.
+- `/merchant/notifications` — M12 read APIs only
+  (list, unread badge, mark read, mark all read).
+  Generation is not active yet and preferences are
+  not persisted (PATCH returns 501), so no
+  preferences form is offered.
+- `/merchant/settings` — honest read-only page:
+  memberships and stores as reported, plus the
+  notification-preference and document-submission
+  limitations. No staff invitation or role
+  management exists in the backend, so none is
+  built.
+
+## Merchant portal: API contract and roles (verified, W4)
+
+Endpoints used, all under `/v1`: merchant
+applications (`POST /merchants/applications`,
+`GET /merchants`, `GET /merchants/{id}`), stores
+(`POST /merchants/{id}/stores`,
+`GET /merchants/{id}/stores`, `GET|PUT
+/stores/{id}/hours`), categories (`GET
+/categories`, auth, active only), listings
+(`POST /stores/{id}/listings`,
+`GET /stores/{id}/listings`, `GET|PATCH
+/listings/{id}`, `POST
+/listings/{id}/publish|pause|resume|cancel`,
+`GET /listings/{id}/inventory`, `GET|POST
+/listings/{id}/images`), merchant orders (`GET
+/merchant/orders`, `/summary`, `/{id}`), pickup
+verify (`POST /merchant/pickups/verify`),
+dashboard (`GET /merchant/dashboard`, `/sales`,
+`/inventory`, `/pickups`, `/stores`), reviews
+(public store reviews + rating-summary), and
+notifications (M12 read APIs). Listing window
+rules enforced by the backend and mirrored in
+form validation: sale_ends > sale_starts when
+given, pickup_ends > pickup_starts, pickup_ends
+>= sale_ends, best_before >= prepared_at when
+both set; selling_price > 0, reference_value >=
+0, total_quantity > 0; allergen codes are
+format-validated only (lowercase
+`^[a-z0-9_-]+$`), there is no closed allergen
+list. Role matrix (backend-enforced; the portal
+only mirrors it): store create is owner/admin;
+listing management is owner/admin or
+store_manager/inventory_manager with an active
+merchant membership; hours update is owner/admin
+or store_manager with membership; order and
+dashboard views are owner, admin,
+store_manager, pickup_operator, finance_viewer
+(inventory_manager is NOT a dashboard/order
+role); finance viewers get no listing or pickup
+authority from the portal, and inventory managers
+get no dashboard/order access. Selected-store
+state in localStorage (`savebite_merchant_store_v1`)
+is validated against the loaded memberships on
+every load and never treated as proof of access.
+
+## Known limitations (W4)
+
+- No merchant-facing document-upload endpoint
+  exists: FSSAI verification is admin-side only,
+  enforced in the review RPC. The portal shows a
+  clear "document submission is not yet available
+  through the portal" message and never works
+  around it with direct Supabase storage writes
+  to a public bucket. Separate backend task if
+  merchant uploads are wanted.
+- No single-store GET endpoint: store detail is
+  assembled from the caller's membership store
+  lists; a store id outside those lists renders
+  not-found.
+- Listing images cannot be edited or deleted
+  (INSERT/SELECT policy only); no image edit or
+  delete UI is offered.
+- Store-hours weekday convention (0 = Monday vs
+  Sunday) is unverified in the backend, so the
+  hours editor shows weekday numbers and M10
+  `open_now` is always null; never guess day names.
+- No merchant payout, settlement, refund,
+  delivery, staff-invitation, or review-reply
+  capability: none exists in the backend for W4.
+- E2E does not cover image upload or
+  registration: the stub serves no Supabase
+  Storage, so neither the bucket upload nor the
+  registration call is exercised in Playwright;
+  both need a manual check against a real bucket
+  before launch.
 
 ## Public marketplace: API contract (verified, W2)
 
@@ -382,7 +578,23 @@ from retries.
   injection, immediate resolve when loaded).
 - `packages/api-client/tests/`: W3 service contracts
   (reservation body + idempotency header, checkout
-  header, verify body, order-list filters).
+  header, verify body, order-list filters), plus W4
+  merchant service contracts (application, store,
+  hours, listing create/PATCH/transitions,
+  inventory, image registration, dashboard, pickup
+  verify request shapes).
+- `apps/web/tests/merchant.test.ts`: W4 listing
+  form validation (window rules, price/quantity,
+  allergen format), transition map, slug/pincode
+  patterns, pickup-token normalisation.
+- `apps/web/e2e/merchant.spec.ts`: W4 mocked
+  merchant journey (sign-in, dashboard, Surprise
+  Bag draft, publish, inventory, seeded order
+  queue + detail, pickup invalid + valid tokens,
+  analytics, reviews) plus unauthorized-store
+  not-found and a backend-refused transition
+  after cancel. Image upload is excluded (see
+  Known limitations, W4).
 - `apps/web/e2e/`: Playwright specs against
   `e2e/stub-api.mjs` (fixed fixture responses in the
   real API shapes, port 8000) plus the Next dev

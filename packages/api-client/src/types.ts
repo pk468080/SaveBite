@@ -306,9 +306,12 @@ export interface MerchantSummary {
   legal_name: string;
   display_name: string;
   business_type?: string | null;
+  business_email?: string | null;
+  business_phone?: string | null;
   status: string;
   verification_status: string;
   created_at: string;
+  updated_at?: string | null;
 }
 
 export interface StoreSummary {
@@ -326,6 +329,7 @@ export interface StoreSummary {
 export interface ListingSummary {
   id: string;
   store_id: string;
+  listing_type?: ListingTypeValue;
   title: string;
   selling_price: string;
   currency: string;
@@ -339,12 +343,7 @@ export interface ListingSummary {
   created_at: string;
 }
 
-export interface MerchantDashboard {
-  store_count?: number;
-  total_orders?: number;
-  captured_order_value?: string;
-  [key: string]: unknown;
-}
+export type MerchantDashboard = MerchantDashboardOverview;
 
 export interface AdminDashboard {
   merchants_total: number;
@@ -392,4 +391,367 @@ export interface CurrentUser {
   id: string;
   email?: string | null;
   platform_roles: string[];
+}
+
+/**
+ * Merchant portal types (W4). Verified against the
+ * FastAPI schemas for M3 (merchants/stores/hours),
+ * M4 (listings/images/inventory), M7 (merchant
+ * orders), M8 (pickup verification), M9 (reviews)
+ * and M10 (merchant dashboard). Money is a string
+ * (Decimal on the backend), never a float.
+ */
+
+export type MerchantBusinessTypeValue =
+  | "restaurant"
+  | "bakery"
+  | "cafe"
+  | "supermarket"
+  | "hotel"
+  | "cloud_kitchen"
+  | "grocery_store"
+  | "food_manufacturer"
+  | "sweet_shop"
+  | "other";
+
+export type MerchantStatusValue =
+  | "pending_review"
+  | "additional_information_required"
+  | "approved"
+  | "rejected"
+  | "suspended";
+
+export type MerchantVerificationValue =
+  | "pending"
+  | "under_review"
+  | "verified"
+  | "rejected"
+  | "expired";
+
+export type StoreStatusValue = "draft" | "active" | "inactive" | "suspended";
+
+export type ListingStatusValue =
+  | "draft"
+  | "scheduled"
+  | "active"
+  | "paused"
+  | "sold_out"
+  | "expired"
+  | "cancelled";
+
+export interface MerchantApplicationCreate {
+  legal_name: string;
+  display_name: string;
+  business_type: MerchantBusinessTypeValue;
+  business_email?: string | null;
+  business_phone?: string | null;
+}
+
+/** Full store record (StoreResponse). StoreSummary
+ * stays the list shape; detail pages use this. */
+export interface StoreDetail extends StoreSummary {
+  slug: string;
+  address_line_1: string;
+  address_line_2?: string | null;
+  country_code: string;
+  contact_phone?: string | null;
+  pickup_instructions?: string | null;
+  timezone: string;
+  updated_at?: string | null;
+}
+
+export interface StoreCreateBody {
+  name: string;
+  slug: string;
+  address_line_1: string;
+  address_line_2?: string | null;
+  locality?: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  contact_phone?: string | null;
+  pickup_instructions?: string | null;
+}
+
+/**
+ * Store hours. Weekday is the backend integer 0-6.
+ * The repository deliberately does NOT state whether
+ * 0 is Monday or Sunday, so the UI shows the number
+ * and never guesses a day name.
+ */
+export interface StoreHoursEntry {
+  weekday: number;
+  is_closed: boolean;
+  opens_at?: string | null;
+  closes_at?: string | null;
+}
+
+export interface StoreHoursResponse {
+  store_id: string;
+  hours: StoreHoursEntry[];
+}
+
+export interface StoreHoursUpdateResponse {
+  store_id: string;
+  processed: number;
+  hours: StoreHoursEntry[];
+}
+
+/** Full listing record (ListingResponse). */
+export interface ListingDetail {
+  id: string;
+  store_id: string;
+  template_id?: string | null;
+  listing_type: ListingTypeValue;
+  category_id?: string | null;
+  title: string;
+  description?: string | null;
+  contents_description?: string | null;
+  reference_value: string;
+  selling_price: string;
+  currency: string;
+  total_quantity: number;
+  reserved_quantity: number;
+  sold_quantity: number;
+  available_quantity: number;
+  sale_starts_at?: string | null;
+  sale_ends_at: string;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  prepared_at?: string | null;
+  best_before_at?: string | null;
+  allergen_codes: string[];
+  dietary_classification: DietaryValue;
+  storage_instructions?: string | null;
+  food_safety_notes?: string | null;
+  status: ListingStatusValue;
+  published_at?: string | null;
+  created_by: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ListingCreateBody {
+  listing_type: ListingTypeValue;
+  category_id?: string | null;
+  title: string;
+  description?: string | null;
+  contents_description?: string | null;
+  reference_value: string;
+  selling_price: string;
+  total_quantity: number;
+  sale_starts_at?: string | null;
+  sale_ends_at: string;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  prepared_at?: string | null;
+  best_before_at?: string | null;
+  allergen_codes?: string[];
+  dietary_classification?: DietaryValue;
+  storage_instructions?: string | null;
+  food_safety_notes?: string | null;
+}
+
+export type ListingUpdateBody = Partial<ListingCreateBody>;
+
+export interface ListingImage {
+  id: string;
+  listing_id: string;
+  storage_path: string;
+  alt_text?: string | null;
+  display_order: number;
+  created_at?: string | null;
+}
+
+export interface InventoryAvailability {
+  listing_id: string;
+  store_id: string;
+  status: ListingStatusValue;
+  total_quantity: number;
+  reserved_quantity: number;
+  sold_quantity: number;
+  available_quantity: number;
+  sale_ends_at: string;
+  pickup_ends_at: string;
+}
+
+export interface DashboardPeriod {
+  from?: string | null;
+  to?: string | null;
+}
+
+export interface DashboardStoreContext {
+  store_id?: string | null;
+  store_name?: string | null;
+  store_status?: string | null;
+  timezone: string;
+  /** Null means unknown, never "closed": the
+   * weekday convention is unverified, so the
+   * backend deliberately returns null. */
+  open_now?: boolean | null;
+  store_count: number;
+}
+
+export interface DashboardOrderMetrics {
+  total_orders: number;
+  paid_orders: number;
+  awaiting_payment_orders: number;
+  collected_orders: number;
+  cancelled_orders: number;
+  expired_orders: number;
+  refund_orders: number;
+  /** Sum over captured payments only. This is NOT
+   * earnings, settlement or payout revenue. */
+  captured_order_value: string;
+  currency: string;
+}
+
+export interface DashboardInventoryMetrics {
+  total_listings: number;
+  published_listings: number;
+  draft_listings: number;
+  paused_listings: number;
+  sold_out_listings: number;
+  total_available_units: number;
+  total_reserved_units: number;
+  total_sold_units: number;
+}
+
+export interface DashboardPickupMetrics {
+  upcoming_pickups: number;
+  in_window_pickups: number;
+  completed_collections: number;
+  /** Window closed without collection. Labelled
+   * window_expired, never "missed": the database
+   * records no no-show event. */
+  window_expired_pickups: number;
+}
+
+export interface DashboardRatingMetrics {
+  average_rating: number | null;
+  total_visible_reviews: number;
+  five_star: number;
+  four_star: number;
+  three_star: number;
+  two_star: number;
+  one_star: number;
+}
+
+export interface MerchantDashboardOverview {
+  period: DashboardPeriod;
+  store: DashboardStoreContext;
+  orders: DashboardOrderMetrics;
+  inventory: DashboardInventoryMetrics;
+  pickups: DashboardPickupMetrics;
+  ratings: DashboardRatingMetrics;
+}
+
+export interface SalesBucket {
+  period_start: string;
+  total_orders: number;
+  captured_orders: number;
+  pending_payment_orders: number;
+  failed_payment_orders: number;
+  collected_orders: number;
+  cancelled_or_expired_orders: number;
+  captured_order_value: string;
+  currency: string;
+}
+
+export interface SalesAnalytics {
+  period: DashboardPeriod;
+  store: DashboardStoreContext;
+  group_by: string;
+  reporting_timezone: string;
+  buckets: SalesBucket[];
+  totals: SalesBucket;
+}
+
+export interface InventoryListingSummary {
+  listing_id: string;
+  title: string;
+  status: string;
+  available_quantity: number;
+  reserved_quantity: number;
+  sold_quantity: number;
+  sale_ends_at?: string | null;
+}
+
+export interface InventoryDashboard {
+  period: DashboardPeriod;
+  store: DashboardStoreContext;
+  summary: DashboardInventoryMetrics;
+  /** Only populated when a low_stock_threshold
+   * query is given. A reporting filter, not a
+   * business definition of low stock. */
+  low_stock_listings: InventoryListingSummary[];
+}
+
+export interface PickupOrderSummary {
+  order_number: string;
+  status: string;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  category: "upcoming" | "in_window" | "completed" | "window_expired";
+  total_quantity: number;
+}
+
+export interface PickupDashboard {
+  period: DashboardPeriod;
+  store: DashboardStoreContext;
+  counts: DashboardPickupMetrics;
+  orders: PickupOrderSummary[];
+}
+
+export interface StoreComparisonRow {
+  store_id: string;
+  store_name: string;
+  store_status: string;
+  total_orders: number;
+  captured_order_value: string;
+  collected_orders: number;
+  active_listings: number;
+  available_units: number;
+  average_rating: number | null;
+  review_count: number;
+}
+
+export interface StoreComparison {
+  period: DashboardPeriod;
+  stores: StoreComparisonRow[];
+}
+
+export interface MerchantOrderSummary {
+  id: string;
+  order_number: string;
+  status: OrderStatusValue;
+  payment_status: PaymentStatusValue;
+  total_amount: string;
+  currency: string;
+  created_at: string;
+  store: OrderStoreSummary;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  item_count: number;
+  items_preview: OrderItemPreview[];
+}
+
+export interface MerchantOrderQueueSummary {
+  total: number;
+  awaiting_payment: number;
+  paid: number;
+  upcoming_pickups: number;
+  completed: number;
+  cancelled_or_expired: number;
+}
+
+export interface PickupVerifyResponse {
+  order_id: string;
+  order_number: string;
+  store_name: string;
+  status: OrderStatusValue;
+  collected_at: string;
+  items: OrderItemPreview[];
 }
