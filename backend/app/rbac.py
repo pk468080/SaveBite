@@ -145,6 +145,43 @@ def require_store_role(*roles: MerchantMemberRole):  # type: ignore[no-untyped-d
     return checker
 
 
+async def can_manage_store_hours(
+    user: AuthenticatedUser,
+    client: SupabaseRestClient,
+    store_id: UUID,
+) -> tuple[bool, UUID | None]:
+    """Mirror private.can_manage_store(store_id, ['store_manager'])
+    exactly, without blocking merchant owners/admins.
+
+    Returns (allowed, merchant_id). Owners/admins of the store's
+    merchant are always allowed, even with no store-staff row.
+    A store_manager is allowed only when they also hold an active
+    merchant membership — the DB's can_manage_store joins
+    merchant_memberships first, so a staff row alone is not enough.
+    Any other role, or no merchant membership at all, is denied.
+    merchant_id is None when the store is not visible to the caller
+    (RLS returns no row), which the caller turns into 404."""
+    stores = await client.query(
+        "stores",
+        select="merchant_id",
+        filters={"id": f"eq.{store_id}"},
+    )
+    if not stores:
+        return False, None
+    merchant_id = UUID(stores[0]["merchant_id"])
+    merchant_roles = await get_merchant_roles(user, client, merchant_id)
+    if MerchantMemberRole.owner in merchant_roles or (
+        MerchantMemberRole.admin in merchant_roles
+    ):
+        return True, merchant_id
+    if not merchant_roles:
+        return False, merchant_id
+    store_roles = await get_store_roles(user, client, store_id)
+    if MerchantMemberRole.store_manager in store_roles:
+        return True, merchant_id
+    return False, merchant_id
+
+
 def reviewer_id_for(user: AuthenticatedUser) -> str:
     """The only reviewer/actor id a handler may pass to a backend_* RPC."""
     return str(user.id)

@@ -1,13 +1,131 @@
-# SaveBite API — FastAPI foundation (Milestone 2)
+# SaveBite API — FastAPI foundation (Milestone 2) + Merchant
+Onboarding & Store Setup (Milestone 3)
 
 Modular FastAPI monolith for the SaveBite surplus-food marketplace.
-Milestone 2 is foundation only: configuration, authentication,
-authorisation, error handling, structured logging, health/readiness,
-and tests. No business routes, no Razorpay integration, and no
-database schema changes are included here.
+Milestone 2 provided configuration, authentication, authorisation,
+error handling, structured logging, health/readiness, and tests.
+Milestone 3 adds merchant onboarding and store management routes
+(see below). No Razorpay integration, no listings, no ordering, and
+no database schema changes are included here.
 
 See `../docs/architecture.md` for the full architecture, integration
 boundaries, and security rules.
+
+## Milestone 3 routes
+
+All routes require a Supabase Auth Bearer token (see
+`GET /v1/me` in Milestone 2). All use the user-context Supabase
+client and user-context RPCs; the service-role client is never used
+for these operations. Roles come from `merchant_memberships` and
+`store_staff_memberships`, never from the request body.
+
+| Method | Route | Who can call it | Success |
+| --- | --- | --- | --- |
+| POST | `/v1/merchants/applications` | Any authenticated user | 201, created merchant |
+| GET | `/v1/merchants` | Authenticated user | 200, only their active memberships' merchants |
+| GET | `/v1/merchants/{merchant_id}` | Any active merchant member | 200 |
+| POST | `/v1/merchants/{merchant_id}/stores` | Merchant owner or admin | 201, created store (status `draft`) |
+| GET | `/v1/merchants/{merchant_id}/stores` | Any active merchant member | 200 |
+| GET | `/v1/stores/{store_id}/hours` | Merchant owner/admin, or store_manager with an active merchant membership | 200 |
+| PUT | `/v1/stores/{store_id}/hours` | Same as GET hours | 200, `processed` = entries upserted |
+
+Store-hours authorisation mirrors
+`private.can_manage_store(store_id, ['store_manager'])`: owners and
+admins are allowed even with no store-staff row, and a
+store_manager is allowed only with an active merchant membership
+as well. Do not rely on store-staff memberships alone, or owners
+would be blocked.
+
+### Examples
+
+Submit a merchant application (email/phone are optional in the
+database and in this API; when supplied they must be a valid email
+and an Indian mobile number):
+
+```sh
+curl -X POST http://127.0.0.1:8000/v1/merchants/applications \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "legal_name": "Sharma Foods Pvt Ltd",
+    "display_name": "Sharma Foods",
+    "business_type": "restaurant",
+    "business_email": "hello@sharma.example.com",
+    "business_phone": "9876543210"
+  }'
+# 201 {"id": "<merchant-uuid>", "status": "pending_review",
+#      "verification_status": "pending", ...}
+```
+
+Create a store (owner/admin only; PIN code must be six digits
+starting 1-9; latitude and longitude must both be present or both
+absent; slug is lowercased):
+
+```sh
+curl -X POST http://127.0.0.1:8000/v1/merchants/<merchant-uuid>/stores \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Sharma Foods Dwarka",
+    "slug": "sharma-foods-dwarka",
+    "address_line_1": "Shop 12, Sector 7 Market",
+    "city": "New Delhi", "state": "Delhi", "pincode": "110075",
+    "latitude": 28.5921, "longitude": 77.0460
+  }'
+# 201 {"id": "<store-uuid>", "status": "draft", "country_code": "IN",
+#      "timezone": "Asia/Kolkata", ...}
+```
+
+Set weekly hours (weekdays 0-6, one entry per weekday, max 7;
+closed days must have no times; open days need opens_at before
+closes_at):
+
+```sh
+curl -X PUT http://127.0.0.1:8000/v1/stores/<store-uuid>/hours \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"hours": [
+    {"weekday": 0, "opens_at": "09:00", "closes_at": "21:00"},
+    {"weekday": 6, "is_closed": true}
+  ]}'
+# 200 {"store_id": "<store-uuid>", "processed": 2, "hours": [...]}
+```
+
+Errors use the standard envelope
+`{"error": {"code": "...", "message": "...", "request_id": "..."}}`:
+401 unauthenticated, 403 non-member / wrong role, 404 store or
+merchant not visible to the caller, 422 validation (including
+database validation errors such as `business_name_required`,
+mapped from the PostgREST error code), 502 upstream failure.
+
+### Known limitations and deferred workflows (Milestone 3)
+
+- Merchant approval, document verification, and store activation
+  are NOT implemented: new merchants stay `pending_review` and new
+  stores stay `draft` until a later, approved workflow changes them.
+- No listings, inventory, ordering, reservations, payments,
+  pickup verification, refunds, or delivery.
+- No new tables, columns, functions, policies, or migrations.
+- Store responses do not include the `location` geography field:
+  the database stores it as geography, not latitude/longitude
+  columns, and this milestone does not invent a conversion for it.
+- Business email and phone are optional (matching the database
+  RPC defaults), not required, even though a real onboarding flow
+  will usually collect them.
+- The API does not expose approved merchants publicly: listing
+  and detail routes return only the caller's own memberships, even
+  though the database RLS also allows approved-merchant reads.
+
+### Local testing
+
+```sh
+cd backend
+pytest -q tests/test_merchants.py   # Milestone 3 only
+pytest -q                           # full suite
+```
+
+Milestone 3 tests use fakes and dependency overrides only; they
+never touch live Supabase and never use a real secret.
 
 ## Quick start (local, no secrets required for health)
 
