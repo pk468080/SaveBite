@@ -9,7 +9,12 @@ from app.auth import fetch_supabase_user
 from app.config import Settings, get_settings
 from app.errors import AuthenticationError
 from app.schemas import AuthenticatedUser
-from app.supabase_client import SupabaseRestClient, service_client, user_client
+from app.supabase_client import (
+    SupabaseRestClient,
+    anon_client,
+    service_client,
+    user_client,
+)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -28,6 +33,17 @@ def get_user_client(
     settings: Settings = Depends(get_settings),
 ) -> SupabaseRestClient:
     return user_client(settings, user.token)
+
+
+def get_anon_client(
+    settings: Settings = Depends(get_settings),
+) -> SupabaseRestClient:
+    """Anonymous discovery client. Deliberately NOT depending on
+    get_current_user, so marketplace browsing works without a
+    bearer token. Read-only by construction (see anon_client);
+    it must never be used for a write, an RPC, or a
+    merchant-only record."""
+    return anon_client(settings)
 
 
 def get_service_client(

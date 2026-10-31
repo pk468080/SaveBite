@@ -128,6 +128,40 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 5 routes: marketplace and reservations
+
+Anonymous, read-only discovery — no bearer token needed:
+
+- `GET /v1/marketplace/listings` — browse eligible public
+  listings. Filters: city, pincode, category_id, listing_type,
+  search, min_price, max_price, dietary. Sort: newest,
+  lowest_price, highest_price, ending_soon (id tiebreak).
+  Pagination: page, page_size (max 100). Response: items,
+  total, page, page_size.
+- `GET /v1/marketplace/listings/{listing_id}` — public details
+  only (no created_by, contact phone, merchant internals, or
+  payment data). Non-eligible listings return 404.
+- `GET /v1/marketplace/categories` — active categories only.
+
+Authenticated reservation — bearer token required:
+
+- `POST /v1/orders/reservations` — body: store_id, items
+  (1–20, unique listings, quantity 1–20 each), optional
+  customer_note (max 1000 chars). Requires the
+  `Idempotency-Key` header (8–128 chars, passed unchanged to
+  the RPC). Calls only the approved user-context RPC
+  `create_order_reservation`. Returns 201 with order_id,
+  order_number, status (pending_payment), total_amount,
+  currency, reservation_expires_at (~5 minutes, absent on
+  idempotent replay), pickup window, and idempotent_replay.
+  A reservation is NOT a paid or fully confirmed order.
+  This endpoint never calls begin_payment_checkout and never
+  writes orders, order_items, or inventory tables directly.
+
+See `../docs/architecture.md` for the full anonymous-vs-
+authenticated access rules, public field list, and the
+pagination-at-scale limitation.
+
 ## Milestone 4 routes: listings and inventory
 
 All routes require a Supabase Auth Bearer token and use the
