@@ -1275,6 +1275,169 @@ video uploads, loyalty points, discounts or incentives
 for reviews, fake/test production reviews, refunds,
 payouts, and any live schema/RLS/grant/RPC change.
 
+## Milestone 10: Merchant dashboard and store analytics
+
+### What the dashboard reads (verified, not assumed)
+
+- stores: id, merchant_id, name, status
+  (draft/active/inactive/suspended), timezone (default
+  Asia/Kolkata). store_hours: weekday, opens_at,
+  closes_at.
+- listings: status (draft/scheduled/active/paused/
+  sold_out/expired/cancelled), selling_price, currency
+  INR, total/reserved/sold quantities, and the
+  generated stored column available_quantity = total -
+  reserved - sold (read-only, never written, never
+  recomputed for business decisions). "Published" means
+  status active, the status the publish endpoint sets.
+- orders: status, payment_status, total_amount
+  (numeric), created_at, pickup window, collected_at.
+- reviews: rating, moderation_status, store_id —
+  dashboard aggregates use visible reviews only, the
+  same rule as M9.
+- Pickup events live in private.pickup_events and are
+  NOT queried (private schema). Pickup categories are
+  derived from order rows + the current time, using the
+  same windows the verify RPC enforces: in-window =
+  pickup_starts_at - 15 minutes to pickup_ends_at + 30
+  minutes; window_expired = past pickup_ends_at + 30
+  minutes without collection. A window-expired order is
+  NEVER labelled "missed": the database records no
+  no-show event.
+
+### Endpoints (authenticated, user-context client only,
+### read-only — no dashboard route mutates anything)
+
+- `GET /v1/merchant/dashboard` — overview for one
+  authorized store (store_id) or all authorized stores
+  (no store_id), optional half-open period [from, to).
+  Returns store context, order metrics (total, paid,
+  awaiting payment, collected, cancelled, expired,
+  refund-related counts, captured order value),
+  inventory metrics (total/published/draft/paused/
+  sold-out listings, available/reserved/sold units),
+  pickup metrics (upcoming, in-window, completed,
+  window-expired), and rating metrics (average, total
+  visible reviews, star distribution).
+- `GET /v1/merchant/dashboard/sales` — store_id,
+  from, to, group_by (day/week/month). Buckets carry
+  total, captured, pending-payment, failed-payment,
+  collected, and cancelled-or-expired order counts plus
+  captured order value; a totals bucket sums them.
+  Grouping uses the store's own timezone for a single
+  store, Asia/Kolkata when aggregating multiple stores.
+  Day = calendar day, week = Monday-start ISO week,
+  month = calendar month, all in that timezone.
+- `GET /v1/merchant/dashboard/inventory` — store
+  inventory summary plus, only when
+  low_stock_threshold is given, listings whose
+  generated available_quantity is at or below it. The
+  threshold is a reporting filter, not a business
+  definition of low stock, and it changes no listing
+  status or quantity.
+- `GET /v1/merchant/dashboard/pickups` — store_id,
+  from, to, and category (upcoming/in_window/
+  completed/window_expired) filters. Each order shows
+  order number, status, pickup window, category, and
+  total item quantity (batched from order_items).
+  Pending-payment, cancelled, and expired orders are
+  not pickup orders and never appear here.
+- `GET /v1/merchant/dashboard/stores` — one row per
+  authorized store: name, status, total orders,
+  captured order value, collected orders, active
+  listings, available units, average rating, review
+  count. Comparison metrics are computed from the same
+  batched queries as the individual summaries, so they
+  agree with them.
+
+### Money: captured order value, precisely defined
+
+Captured order value = sum of total_amount over orders
+whose payment_status is captured, and nothing else.
+Pending, authorized-only, failed, refunded,
+partially_refunded, and reconciliation states never
+count as sales. A captured order is not called
+collected unless its order status is collected.
+Captured order value is NOT merchant earnings,
+settlement, or payout revenue: platform fees, refunds,
+and payouts are not deducted, because the order row
+carries no refund amounts to net against — so no net
+revenue figure is reported at all. Refund-related
+orders are counted but their amounts are never
+estimated. All money math is Decimal, serialized as
+strings ("390.00"), never floats.
+
+### Dates and timezone
+
+The reporting period is half-open [from, to): an order
+created exactly at `to` belongs to the next period,
+never to both. PostgREST filters carry store_id and
+created_at >= from; the upper bound is applied in
+Python because the client holds one operator per
+column (the same documented limitation as M7).
+Stores carry their own timezone column, default
+Asia/Kolkata; a single store's sales group in its own
+timezone, multi-store sales group in Asia/Kolkata.
+
+### Operating status: deliberately unknown
+
+The dashboard returns open_now = null. The database
+stores weekday as 0-6, but no code or document in the
+repository states whether 0 is Monday or Sunday, so
+"open now" cannot be determined reliably from stored
+hours + actual time. Guessing would report a closed
+store as open or vice versa. Enabling it requires
+first verifying the weekday convention against a real
+store's hours — a proposed verification, not applied.
+
+### Authorization
+
+Mirrors M7 order reads, the existing orders RLS set:
+a store is authorized when the caller is a merchant
+member with role owner/admin (all stores of that
+merchant) or a store staff member with role
+store_manager, pickup_operator, or finance_viewer.
+inventory_manager is NOT in the orders RLS set and is
+therefore NOT granted dashboard access here — it keeps
+the existing listings APIs. A requested store_id can
+only narrow the authorized set; an unauthorized store
+returns 404. No client-supplied merchant id or role is
+ever trusted, and no service-role client is used.
+
+### Performance and limitations (honest)
+
+Orders, listings, and reviews for the authorized store
+set are fetched in one query each (batched by store_id
+in), then aggregated in Python over that tightly
+scoped set. No per-store queries, no full-table
+fetches, and only required columns are selected. At
+large scale these aggregates belong in database-side
+grouping or an approved read-only view — documented,
+not applied. No new index, function, view, or migration
+was created. Rating aggregation reuses the M9
+pilot-scale approach (rating column only, Python
+aggregation over visible reviews).
+
+### Proposed changes (NOT applied, need approval)
+
+1. A read-only aggregate view/function for store
+   metrics (orders, captured value, inventory, ratings)
+   to replace Python aggregation at large scale, and to
+   enable marketplace rating integration without N+1
+   queries (same proposal as M9, extended to orders).
+2. Verification of the store_hours weekday convention
+   against a real store, after which open_now can be
+   computed from stored hours + actual time.
+
+### Explicitly NOT in this milestone
+
+Merchant payouts, settlement calculations, refund
+processing, accounting or tax reports, listing
+creation/modification, automatic inventory changes,
+price optimization, notifications, staff management,
+new merchant roles, frontend redesign, and any live
+schema/RLS/grant/RPC change.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

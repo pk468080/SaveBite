@@ -1030,6 +1030,171 @@ class StoreRatingSummary(BaseModel):
     one_star: int
 
 
+class DashboardPeriod(BaseModel):
+    """Half-open reporting period [from, to): an order
+    created exactly at `to` belongs to the next period,
+    never to both. Either bound may be null (unbounded)."""
+
+    from_: datetime | None = Field(default=None, alias="from")
+    to: datetime | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class DashboardStoreContext(BaseModel):
+    store_id: UUID | None = None
+    store_name: str | None = None
+    store_status: str | None = None
+    timezone: str
+    # True/False when today's hours row exists with times,
+    # None when no hours row or no times are stored (unknown,
+    # not "closed").
+    open_now: bool | None = None
+    store_count: int = 1
+
+
+class DashboardOrderMetrics(BaseModel):
+    total_orders: int
+    paid_orders: int
+    awaiting_payment_orders: int
+    collected_orders: int
+    cancelled_orders: int
+    expired_orders: int
+    refund_orders: int
+    # Sum of total_amount over orders whose payment_status
+    # is captured ONLY. Pending, authorized-only, failed,
+    # refunded, and reconciliation states never count.
+    # This is NOT merchant earnings, settlement, or payout
+    # revenue: platform fees, refunds, and payouts are not
+    # deducted or included, because the order row carries
+    # no refund amounts to net against. String, not float,
+    # so money stays exact.
+    captured_order_value: str
+    currency: str = "INR"
+
+
+class DashboardInventoryMetrics(BaseModel):
+    total_listings: int
+    published_listings: int
+    draft_listings: int
+    paused_listings: int
+    sold_out_listings: int
+    # Sums of the database-generated available_quantity
+    # (total - reserved - sold), read, never recomputed
+    # for business decisions and never written.
+    total_available_units: int
+    total_reserved_units: int
+    total_sold_units: int
+
+
+class DashboardPickupMetrics(BaseModel):
+    upcoming_pickups: int
+    in_window_pickups: int
+    completed_collections: int
+    # Orders whose pickup window has closed (past
+    # pickup_ends_at + 30 minutes) without collection.
+    # Labelled window_expired, NOT "missed": the database
+    # records no no-show event, so a missed pickup is
+    # never asserted.
+    window_expired_pickups: int
+
+
+class DashboardRatingMetrics(BaseModel):
+    average_rating: float | None = None
+    total_visible_reviews: int
+    five_star: int
+    four_star: int
+    three_star: int
+    two_star: int
+    one_star: int
+
+
+class DashboardOverview(BaseModel):
+    period: DashboardPeriod
+    store: DashboardStoreContext
+    orders: DashboardOrderMetrics
+    inventory: DashboardInventoryMetrics
+    pickups: DashboardPickupMetrics
+    ratings: DashboardRatingMetrics
+
+
+class SalesBucket(BaseModel):
+    period_start: str
+    total_orders: int
+    captured_orders: int
+    pending_payment_orders: int
+    failed_payment_orders: int
+    collected_orders: int
+    cancelled_or_expired_orders: int
+    captured_order_value: str
+    currency: str = "INR"
+
+
+class SalesAnalytics(BaseModel):
+    period: DashboardPeriod
+    store: DashboardStoreContext
+    group_by: str
+    reporting_timezone: str
+    buckets: list[SalesBucket]
+    totals: SalesBucket
+
+
+class InventoryListingSummary(BaseModel):
+    listing_id: UUID
+    title: str
+    status: str
+    available_quantity: int
+    reserved_quantity: int
+    sold_quantity: int
+    sale_ends_at: datetime | None = None
+
+
+class InventoryDashboard(BaseModel):
+    period: DashboardPeriod
+    store: DashboardStoreContext
+    summary: DashboardInventoryMetrics
+    # Only populated when low_stock_threshold is given:
+    # listings whose generated available_quantity is at or
+    # below the threshold. The threshold is a reporting
+    # filter, not a business definition of low stock, and
+    # it changes no listing status or quantity.
+    low_stock_listings: list[InventoryListingSummary] = []
+
+
+class PickupOrderSummary(BaseModel):
+    order_number: str
+    status: str
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    category: str
+    total_quantity: int
+
+
+class PickupDashboard(BaseModel):
+    period: DashboardPeriod
+    store: DashboardStoreContext
+    counts: DashboardPickupMetrics
+    orders: list[PickupOrderSummary]
+
+
+class StoreComparisonRow(BaseModel):
+    store_id: UUID
+    store_name: str
+    store_status: str
+    total_orders: int
+    captured_order_value: str
+    collected_orders: int
+    active_listings: int
+    available_units: int
+    average_rating: float | None = None
+    review_count: int
+
+
+class StoreComparison(BaseModel):
+    period: DashboardPeriod
+    stores: list[StoreComparisonRow]
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str
