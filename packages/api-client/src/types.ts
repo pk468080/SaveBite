@@ -755,3 +755,24 @@ export interface PickupVerifyResponse {
   collected_at: string;
   items: OrderItemPreview[];
 }
+
+/**
+ * One-time pickup token, returned ONLY at
+ * issuance (M8). The backend stores only the
+ * SHA-256 hash, so the plaintext token cannot
+ * be retrieved later: a lost token means issuing
+ * a fresh one, which invalidates the old unused
+ * one. qr_payload is the exact string to render
+ * as a QR code ("SB1:<64-hex-token>").
+ */
+export interface PickupTokenResponse {
+  order_id: string;
+  order_number: string;
+  pickup_token: string;
+  qr_payload: string;
+  expires_at: string;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  store_name: string;
+  pickup_instructions?: string | null;
+}

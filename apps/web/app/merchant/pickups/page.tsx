@@ -1,10 +1,12 @@
 "use client";
 
 import { createServices, type PickupVerifyResponse } from "@savebite/api-client";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { StoreSelector } from "@/components/merchant/store-selector";
 import { useMerchantStores } from "@/components/merchant/store-context";
 import { isValidPickupToken, normalisePickupToken } from "@/lib/merchant";
+import { parseQrPayload } from "@/lib/pickup";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, EmptyState, LoadingState } from "@/components/ui/states";
@@ -12,17 +14,25 @@ import { createBrowserApiClient } from "@/lib/api/browser";
 import { formatDateTime } from "@/lib/order-labels";
 
 /**
- * Pickup verification (W4, M8). The backend
- * owns every check: token authenticity, order
- * eligibility, payment capture, store
- * authorization, pickup window and duplicate
- * collection. This page only sends one request
- * per verification and shows what the backend
- * returns. Scanned tokens are never logged,
- * never stored, and the input is cleared after
- * every attempt. Repeated camera frames cannot
- * send duplicate requests: an in-flight guard
- * plus a last-token guard block them.
+ * Pickup verification (W4, improved in W5, M8).
+ * The backend owns every check: token
+ * authenticity, order eligibility, payment
+ * capture, store authorization, pickup window
+ * and duplicate collection. This page only sends
+ * one request per verification and shows what
+ * the backend returns. Scanned tokens are never
+ * logged, never stored, and the input is cleared
+ * after every attempt. Repeated camera frames
+ * cannot send duplicate requests: an in-flight
+ * guard plus a last-token guard block them.
+ * W5 changes: a scanned value must be exactly a
+ * SaveBite QR payload (SB1: + 64 hex chars) or
+ * it is rejected before any backend call; a
+ * failed scan keeps scanning instead of going
+ * silent; a successful scan stops the camera;
+ * and the success box links to the collected
+ * order (order pages refetch on navigation, so
+ * the collected status shows there).
  */
 export default function MerchantPickupsPage() {
   const { stores, selectedStoreId, loading: storesLoading } = useMerchantStores();
@@ -50,18 +60,35 @@ export default function MerchantPickupsPage() {
     };
   }, []);
 
-  async function verify(rawToken: string) {
+  async function verify(rawToken: string, fromScan = false): Promise<"ok" | "failed" | "blocked"> {
     if (!selectedStoreId) {
       setError("Pick a store first — the store in the request is where the customer is standing.");
-      return;
+      return "failed";
     }
-    const token = normalisePickupToken(rawToken);
-    if (!isValidPickupToken(token)) {
-      setError("Enter a pickup token or scan a SaveBite QR code (it starts with SB1:).");
-      return;
+    let token: string;
+    if (fromScan) {
+      // A scanned value must be exactly a SaveBite
+      // QR payload. Anything else (a random QR
+      // code, a barcode, a partial read) is
+      // rejected here, before any backend call —
+      // a decode is never treated as a collection.
+      const parsed = parseQrPayload(rawToken);
+      if (parsed === null) {
+        setError(
+          "That QR code is not a SaveBite pickup code. It must start with SB1: followed by a 64-character token.",
+        );
+        return "failed";
+      }
+      token = parsed;
+    } else {
+      token = normalisePickupToken(rawToken);
+      if (!isValidPickupToken(token)) {
+        setError("Enter the full pickup token (64 characters) or scan a SaveBite QR code.");
+        return "failed";
+      }
     }
     if (inFlightRef.current || lastTokenRef.current === token) {
-      return;
+      return "blocked";
     }
     inFlightRef.current = true;
     lastTokenRef.current = token;
@@ -75,11 +102,13 @@ export default function MerchantPickupsPage() {
         pickup_token: token,
       });
       setResult(verified);
+      return "ok";
     } catch (err) {
       // The backend collapses distinct failures
       // into safe messages on purpose; they are
       // shown as-is, without guessing which case.
       setError(err instanceof Error ? err.message : "Pickup could not be verified.");
+      return "failed";
     } finally {
       setVerifying(false);
       inFlightRef.current = false;
@@ -126,8 +155,17 @@ export default function MerchantPickupsPage() {
         const codes = await detector.detect(videoRef.current);
         const value = codes[0]?.rawValue;
         if (value) {
-          await verify(value);
-          return;
+          const outcome = await verify(value, true);
+          if (outcome === "ok") {
+            // Collection confirmed: stop the
+            // camera instead of leaving it running.
+            stopCamera();
+            return;
+          }
+          // Any other outcome keeps scanning: a
+          // failed scan must not silently end the
+          // session, and the last-token guard
+          // stops the same code re-submitting.
         }
       } catch {
         // A single unreadable frame is not an
@@ -224,7 +262,14 @@ export default function MerchantPickupsPage() {
               {result.items.length > 0 ? (
                 <p>Items: {result.items.map((item) => `${item.title} × ${item.quantity}`).join(", ")}</p>
               ) : null}
-              <div className="mt-3">
+              <p className="text-muted-foreground">
+                The order now shows as collected when you open it — order pages refetch from the
+                backend on navigation, so no stale collected state is kept here.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button asChild variant="outline">
+                  <Link href={`/merchant/orders/${result.order_id}`}>View order</Link>
+                </Button>
                 <Button
                   variant="outline"
                   onClick={() => {

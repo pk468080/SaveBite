@@ -108,6 +108,31 @@ describe("W4 merchant services", () => {
     expect(JSON.parse(String(init.body)).storage_path).toBe("listing-1/photo.jpg");
   });
 
+  it("issues a pickup token with an empty POST body and returns the full M8 shape", async () => {
+    const token = "b".repeat(64);
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, {
+        order_id: "order-1",
+        order_number: "SB-1",
+        pickup_token: token,
+        qr_payload: `SB1:${token}`,
+        expires_at: "2026-10-31T21:30:00+00:00",
+        pickup_starts_at: "2026-10-31T18:00:00+00:00",
+        pickup_ends_at: "2026-10-31T21:00:00+00:00",
+        store_name: "Sharma Foods",
+        pickup_instructions: "Ask at the counter.",
+      }),
+    );
+    const services = clientWith(fetchImpl);
+    const issued = await services.pickup.issuePickupToken("order-1");
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://localhost:8000/v1/orders/order-1/pickup-token");
+    expect(JSON.parse(String(init.body))).toEqual({});
+    expect(issued.qr_payload).toBe(`SB1:${token}`);
+    expect(issued.expires_at).toBe("2026-10-31T21:30:00+00:00");
+    expect(issued.store_name).toBe("Sharma Foods");
+  });
+
   it("sends store_id + pickup_token for pickup verification", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { order_id: "order-1" }));
     const services = clientWith(fetchImpl);

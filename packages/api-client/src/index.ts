@@ -33,6 +33,7 @@ export type {
   MerchantVerificationValue,
   PickupDashboard,
   PickupOrderSummary,
+  PickupTokenResponse,
   PickupVerifyResponse,
   SalesAnalytics,
   SalesBucket,
