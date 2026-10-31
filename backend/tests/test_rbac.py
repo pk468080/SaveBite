@@ -106,6 +106,75 @@ async def test_allowed_when_required_role_present():
     assert result == USER
 
 
+@pytest.mark.asyncio
+async def test_merchant_and_store_queries_select_is_active():
+    """The actual query must request role,is_active, not just role:
+    the Python-side inactive check reads is_active, and PostgREST
+    only returns selected columns."""
+    fake = FakeSupabaseClient(
+        {
+            "merchant_memberships": [{"role": "owner", "is_active": True}],
+            "store_staff_memberships": [{"role": "store_manager", "is_active": True}],
+        }
+    )
+    await get_merchant_roles(USER, fake, MERCHANT)
+    store_id = UUID("33333333-3333-4333-8333-333333333333")
+    await get_store_roles(USER, fake, store_id)
+    selects = {table: select for table, select, _ in fake.query_calls}
+    assert selects["merchant_memberships"] == "role,is_active"
+    assert selects["store_staff_memberships"] == "role,is_active"
+
+
+@pytest.mark.asyncio
+async def test_fake_respects_select_columns():
+    """Realistic PostgREST response data: stored rows carry extra
+    columns, but the fake must return only the selected ones."""
+    fake = FakeSupabaseClient(
+        {
+            "merchant_memberships": [
+                {
+                    "role": "owner",
+                    "is_active": True,
+                    "merchant_id": str(MERCHANT),
+                    "created_at": "2026-10-31T00:00:00Z",
+                }
+            ]
+        }
+    )
+    rows = await fake.query("merchant_memberships", select="role,is_active")
+    assert rows == [{"role": "owner", "is_active": True}]
+    rows = await fake.query("merchant_memberships", select="role")
+    assert rows == [{"role": "owner"}]
+
+
+@pytest.mark.asyncio
+async def test_inactive_memberships_filtered_with_realistic_data():
+    """Inactive rows still grant nothing when the response contains
+    only the selected role,is_active columns, as real PostgREST
+    would return them."""
+    fake = FakeSupabaseClient(
+        {
+            "merchant_memberships": [
+                {
+                    "role": "owner",
+                    "is_active": False,
+                    "merchant_id": str(MERCHANT),
+                }
+            ],
+            "store_staff_memberships": [
+                {
+                    "role": "store_manager",
+                    "is_active": False,
+                    "store_id": "33333333-3333-4333-8333-333333333333",
+                }
+            ],
+        }
+    )
+    assert await get_merchant_roles(USER, fake, MERCHANT) == []
+    store_id = UUID("33333333-3333-4333-8333-333333333333")
+    assert await get_store_roles(USER, fake, store_id) == []
+
+
 def test_reviewer_id_is_always_the_authenticated_user():
     assert reviewer_id_for(USER) == str(USER.id)
 

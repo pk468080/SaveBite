@@ -52,14 +52,32 @@ def authed_user() -> AuthenticatedUser:
 
 
 class FakeSupabaseClient:
-    """Minimal fake for SupabaseRestClient.query / rpc."""
+    """Minimal fake for SupabaseRestClient.query / rpc.
+
+    query() respects the requested `select` columns, like real
+    PostgREST: it returns only the named columns from each stored
+    row. This matters for RBAC tests — a row stored with extra
+    columns (merchant_id, created_at, ...) must NOT leak them into
+    the code under test, and a column the query did not select
+    (e.g. is_active when select="role") must not be visible to it.
+    Every query is recorded in query_calls for tests that prove
+    which select string the code actually requested."""
 
     def __init__(self, rows: dict[str, list[dict]] | None = None) -> None:
         self.rows = rows or {}
         self.rpc_calls: list[tuple[str, dict]] = []
+        self.query_calls: list[tuple[str, str, object]] = []
 
     async def query(self, table: str, *, select: str = "*", filters=None):  # type: ignore[no-untyped-def]
-        return self.rows.get(table, [])
+        self.query_calls.append((table, select, filters))
+        stored = self.rows.get(table, [])
+        if select.strip() == "*":
+            return [dict(row) for row in stored]
+        columns = [part.strip() for part in select.split(",") if part.strip()]
+        return [
+            {column: row[column] for column in columns if column in row}
+            for row in stored
+        ]
 
     async def rpc(self, name: str, params: dict):  # type: ignore[no-untyped-def]
         self.rpc_calls.append((name, params))

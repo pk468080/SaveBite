@@ -54,7 +54,12 @@ async def get_merchant_roles(
 ) -> list[MerchantMemberRole]:
     rows = await client.query(
         "merchant_memberships",
-        select="role",
+        # is_active must be selected, not just filtered on: the
+        # Python-side inactive check below reads row["is_active"],
+        # and a PostgREST response only contains selected columns.
+        # Requesting "role" alone would make that check see None
+        # for every row and never filter anything.
+        select="role,is_active",
         filters={
             "merchant_id": f"eq.{merchant_id}",
             "user_id": f"eq.{user.id}",
@@ -79,7 +84,9 @@ async def get_store_roles(
 ) -> list[MerchantMemberRole]:
     rows = await client.query(
         "store_staff_memberships",
-        select="role",
+        # Same as get_merchant_roles: is_active must be selected
+        # for the Python-side inactive check to see it.
+        select="role,is_active",
         filters={
             "store_id": f"eq.{store_id}",
             "user_id": f"eq.{user.id}",
