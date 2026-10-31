@@ -128,6 +128,82 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 12 routes: in-app notifications
+
+Audit first: `public.notifications` already exists
+(id, user_id, notification_type, title, body,
+reference_type, reference_id, read_at, created_at)
+with SELECT-own and UPDATE-own policies only — NO
+INSERT policy, NO DELETE policy, and no deduplication
+column. No function, trigger, or application code
+writes to it today, and the service client may not
+write tables directly. Therefore notification
+GENERATION is not live in this milestone: no route
+creates notifications, and no delivery is claimed.
+The catalogue and service in `app/notifications.py`
+define what will be created once the proposed
+`backend_create_notification` RPC is approved (see
+`../docs/proposals/milestone-12-notification-delivery.md`,
+NOT applied, NOT in `supabase/migrations/`).
+
+- `GET /v1/notifications` — own notifications only,
+  newest first, paginated database-side, with
+  `unread_only` and `notification_type` filters.
+  Unknown event types return 422.
+- `GET /v1/notifications/unread-count` — unread count
+  from actual rows, caller only.
+- `GET /v1/notifications/{id}` — own rows only;
+  another user's id returns 404.
+- `POST /v1/notifications/{id}/read` — owner only,
+  idempotent (re-marking returns the existing read
+  timestamp).
+- `POST /v1/notifications/read-all` — marks only the
+  caller's unread rows read; no user id accepted.
+- `GET /v1/notifications/preferences` — documented
+  defaults with `persisted: false` (no preferences
+  table exists yet).
+- `PATCH /v1/notifications/preferences` — validates
+  (unknown categories and disabling mandatory
+  categories rejected with 422) then returns 501,
+  because there is nowhere safe to store the result
+  yet. Mandatory: `payment_updates` (customers) and
+  `operational_alerts` (admins) can never be disabled.
+
+Event catalogue (all catalogued, generation pending
+the approved RPC): customer — `reservation_created`,
+`payment_captured`, `payment_failed`,
+`reservation_expired`, `pickup_reminder` (no scheduler
+yet), `pickup_completed`, `order_cancelled`
+(catalogued only, no approved cancellation workflow);
+merchant — `new_paid_order`,
+`merchant_application_approved`,
+`merchant_application_rejected`, `store_approved`,
+`store_deactivated` (status inactive),
+`merchant_pickup_completed`; admin —
+`payment_reconciliation_required`,
+`merchant_application_submitted`,
+`merchant_application_reviewed`. Recipients are
+resolved from verified data only: customer =
+order.customer_id; merchant = owner/admin members
+plus store_manager/pickup_operator staff for that
+store; admin = operations_admin and super_admin only
+(M11 gate — support/finance/compliance remain
+excluded until the verification fix is approved).
+Content contains only order numbers, store names,
+and statuses — never contact data, payment secrets,
+signatures, tokens, webhook payloads, or merchant
+documents. Deep links are navigation hints only.
+
+Pickup reminders: eligibility is pure and tested
+(confirmed/ready_for_pickup + payment captured + now
+inside the window), but NO reminder job runs — no
+scheduler exists in the repository. Deployment
+requires a 15-minute scheduled job (Supabase Cron /
+pg_cron or a Render cron job) emitting with per-window
+dedup keys. No email, SMS, push, or WhatsApp delivery
+exists here; the private notification outbox is dormant
+external-channel infrastructure and is not touched.
+
 ## Milestone 11 routes: admin dashboard and platform operations
 
 Platform-admin authorization, verified first:
