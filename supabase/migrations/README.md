@@ -1,0 +1,100 @@
+# SaveBite — Supabase migrations
+
+## Live project
+
+- Product: SaveBite (India-focused hybrid surplus-food marketplace)
+- Supabase project: surplus-food-marketplace
+- Project ref: `zehnhqcfawagxbactvne`
+- Project URL: https://zehnhqcfawagxbactvne.supabase.co
+- Region: ap-south-1 (Mumbai)
+- PostgreSQL 17, status ACTIVE_HEALTHY at inspection on 2026-10-31
+
+## Remote migration history — 15 entries (verified live)
+
+These are the migrations already applied to the live project, read from
+`supabase_migrations.schema_migrations` on 2026-10-31. Do not re-apply them,
+do not renumber them, and do not edit them in place.
+
+| Version | Name |
+|---|---|
+| 20261031052859 | core_marketplace_schema |
+| 20261031052926 | commerce_inventory_and_finance |
+| 20261031052957 | support_safety_and_operations |
+| 20261031053137 | row_level_security_and_access_policies |
+| 20261031053406 | marketplace_transaction_functions |
+| 20261031053431 | storage_buckets_and_access_policies |
+| 20261031053621 | rpc_hardening_and_fk_indexes |
+| 20261031053649 | database_testing_and_function_grants |
+| 20261031053823 | reservation_timestamp_cast_fix |
+| 20261031054026 | public_discovery_policy_hardening |
+| 20261031054132 | merchant_store_admin_workflows |
+| 20261031054200 | refund_workflow |
+| 20261031054222 | immutable_double_entry_ledger |
+| 20261031054250 | refund_status_checker_cleanup |
+| 20261031054340 | refund_events_fk_index |
+
+## Migration-history mismatch — read this before any `db push`
+
+**Local vs remote do not match by file, and that is expected here.**
+
+The SaveBite GitHub repository was empty when Milestone 1 started, so it
+contained none of the 15 original migration files. The original migration
+SQL is not recoverable from the live database — only the versions and names
+above can be read back. Reconstructing 15 files and pretending they are the
+originals would be fabrication.
+
+Instead, this directory contains one consolidated file:
+
+- `20261031060000_remote_schema_baseline.sql` — a tracking copy of the
+  current live schema, generated 2026-10-31 by introspecting
+  `pg_catalog` / `information_schema` via the Supabase Management API
+  (read-only). It is NOT one of the 15 remote migrations.
+
+**Do NOT apply this baseline to the live project.** The live project already
+has every object in it. Running `supabase db push` with this file against
+live would fail on duplicate objects and is forbidden by the project stop
+conditions, as are `db reset`, DROP, and any destructive DDL.
+
+The baseline's purpose is repository tracking and code review only:
+future app code and the generated types in `packages/types` can be checked
+against the real schema without recreating it.
+
+**How future migrations must work:** new changes go in NEW migration
+files with a later timestamp, with a written change plan and explicit
+approval first. A developer linking this repo locally must first run
+`supabase link --project-ref zehnhqcfawagxbactvne` with their own access
+token (never committed, never pasted in chat), then verify that the
+remote history still shows the 15 entries above before pushing anything.
+
+## Baseline verification (live counts, 2026-10-31)
+
+The consolidated file was checked against the live database:
+
+- Tables: 41 (25 public + 16 private) — matches live
+- Enum types: 16 (91 labels) — matches live
+- Constraints: 204 — matches live
+- Policies: 41 — matches live
+- Functions: 45 (25 private implementations + 20 public wrappers/helpers)
+- Triggers: 12 — matches live
+- Non-constraint indexes: 86 — matches live
+- RLS: enabled on all 25 public tables; disabled on all 16 private tables
+  (private is service-role-only and must not be exposed through the API)
+- Storage buckets: avatars (public), listing-media (public),
+  incident-evidence (private), merchant-documents (private)
+- Function grants recorded live for anon / authenticated / service_role:
+  60 routine-privilege rows (summarised here, not reproduced as GRANT
+  statements in the baseline)
+
+Known limits of the consolidated pull:
+
+- Some foreign-key definitions are unqualified in `pg_get_constraintdef`
+  output (for example `REFERENCES merchants(id)`) and rely on the live
+  `search_path` resolving them to `public`. The same applies to some
+  trigger function references (`set_updated_at()`). This is faithful to
+  the live definitions, not a change to them.
+- Table/column GRANT statements and storage-bucket policies are not
+  reproduced in the baseline SQL; they are summarised above and must be
+  re-checked with the Supabase advisors after any approved schema change.
+- Data state at inspection: 15 categories seeded; merchants, stores,
+  listings, orders, profiles and service areas all 0. No demo data was
+  added to fill discovery — real merchant onboarding must create it.

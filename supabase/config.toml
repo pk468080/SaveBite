@@ -1,0 +1,17 @@
+# SaveBite — Supabase CLI project reference.
+# This file contains no secret. Linking requires the developer's own
+# Supabase access token, run locally:
+#   supabase link --project-ref zehnhqcfawagxbactvne
+# After linking, verify the remote migration history still shows the
+# 15 entries listed in supabase/migrations/README.md before pushing
+# any new migration. Never push the consolidated baseline in
+# supabase/migrations to the live project.
+project_id = "zehnhqcfawagxbactvne"
+
+[api]
+port = 54321
+schemas = ["public"]
+
+[db]
+port = 54322
+major_version = 17

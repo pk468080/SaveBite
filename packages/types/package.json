@@ -1,0 +1,1 @@
+{"description":"TypeScript database types for SaveBite, generated from the live Supabase public schema. Do not hand-edit; regenerate after any approved schema change.","exports":{".":"./src/database.ts"},"name":"@savebite/types","private":true,"types":"./src/database.ts","version":"0.1.0"}
