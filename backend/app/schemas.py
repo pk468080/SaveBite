@@ -305,6 +305,268 @@ class StoreHoursUpdateResponse(BaseModel):
     hours: list[StoreHoursEntry] = []
 
 
+def _validate_allergen_codes(codes: list[str] | None) -> list[str]:
+    """Allergen codes: the database stores text[] with NO enum or
+    check constraint, so the API validates format only and does
+    NOT invent a closed code list. Codes are lowercased, stripped,
+    unique, and limited to letters, digits, underscores and
+    hyphens."""
+    if codes is None:
+        return []
+    import re as _re
+
+    cleaned: list[str] = []
+    for code in codes:
+        item = code.strip().lower()
+        if not item or not _re.match(r"^[a-z0-9_-]+$", item):
+            raise ValueError(
+                "allergen codes must be lowercase letters, digits, underscores or hyphens"
+            )
+        if item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
+def _validate_listing_windows(
+    sale_starts_at: datetime | None,
+    sale_ends_at: datetime,
+    pickup_starts_at: datetime,
+    pickup_ends_at: datetime,
+) -> None:
+    """Window rules mirroring the database CHECKs exactly:
+    sale_ends > sale_starts (when a start is given; otherwise the
+    DB default now() applies), pickup_ends > pickup_starts, and
+    pickup_ends >= sale_ends. No other ordering is invented."""
+    if sale_starts_at is not None and not sale_ends_at > sale_starts_at:
+        raise ValueError("sale_ends_at must be after sale_starts_at")
+    if not pickup_ends_at > pickup_starts_at:
+        raise ValueError("pickup_ends_at must be after pickup_starts_at")
+    if not pickup_ends_at >= sale_ends_at:
+        raise ValueError("pickup_ends_at must not be before sale_ends_at")
+
+
+class ListingCreate(BaseModel):
+    listing_type: ListingType
+    category_id: UUID | None = None
+    template_id: UUID | None = None
+    title: str = Field(max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    contents_description: str | None = Field(default=None, max_length=5000)
+    reference_value: Decimal = Field(ge=Decimal("0"), max_digits=12, decimal_places=2)
+    selling_price: Decimal = Field(gt=Decimal("0"), max_digits=12, decimal_places=2)
+    total_quantity: int = Field(gt=0)
+    sale_starts_at: datetime | None = None
+    sale_ends_at: datetime
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    prepared_at: datetime | None = None
+    best_before_at: datetime | None = None
+    allergen_codes: list[str] = Field(default_factory=list)
+    dietary_classification: DietaryClassification = DietaryClassification.unknown
+    storage_instructions: str | None = Field(default=None, max_length=2000)
+    food_safety_notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip_title(cls, value: object) -> object:
+        if isinstance(value, str):
+            return _strip_non_empty(value, "title")
+        return value
+
+    @field_validator(
+        "description",
+        "contents_description",
+        "storage_instructions",
+        "food_safety_notes",
+    )
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        return _optional_stripped(value)
+
+    @field_validator("allergen_codes")
+    @classmethod
+    def _validate_allergens(cls, value: list[str] | None) -> list[str]:
+        return _validate_allergen_codes(value)
+
+    @model_validator(mode="after")
+    def _validate_listing(self) -> ListingCreate:
+        _validate_listing_windows(
+            self.sale_starts_at,
+            self.sale_ends_at,
+            self.pickup_starts_at,
+            self.pickup_ends_at,
+        )
+        # The database only checks best_before >= prepared_at when
+        # both are set (CHECK best_before IS NULL OR best_before >=
+        # prepared_at); a best_before without prepared_at is allowed
+        # by the DB and is not rejected here either.
+        if (
+            self.prepared_at is not None
+            and self.best_before_at is not None
+            and not self.best_before_at >= self.prepared_at
+        ):
+            raise ValueError("best_before_at must not be before prepared_at")
+        return self
+
+
+class ListingUpdate(BaseModel):
+    """Partial update. Only columns the authenticated role has an
+    UPDATE grant on may appear here: status is handled by the
+    dedicated transition endpoints, and store_id, listing_type,
+    template_id, currency, created_by and all inventory counters
+    are immutable through this API (no UPDATE grant, and no
+    endpoint may set them)."""
+
+    category_id: UUID | None = None
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    contents_description: str | None = Field(default=None, max_length=5000)
+    reference_value: Decimal | None = Field(
+        default=None, ge=Decimal("0"), max_digits=12, decimal_places=2
+    )
+    selling_price: Decimal | None = Field(
+        default=None, gt=Decimal("0"), max_digits=12, decimal_places=2
+    )
+    total_quantity: int | None = Field(default=None, gt=0)
+    sale_starts_at: datetime | None = None
+    sale_ends_at: datetime | None = None
+    pickup_starts_at: datetime | None = None
+    pickup_ends_at: datetime | None = None
+    prepared_at: datetime | None = None
+    best_before_at: datetime | None = None
+    allergen_codes: list[str] | None = None
+    dietary_classification: DietaryClassification | None = None
+    storage_instructions: str | None = Field(default=None, max_length=2000)
+    food_safety_notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip_title(cls, value: object) -> object:
+        if isinstance(value, str):
+            return _strip_non_empty(value, "title")
+        return value
+
+    @field_validator(
+        "description",
+        "contents_description",
+        "storage_instructions",
+        "food_safety_notes",
+    )
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        return _optional_stripped(value)
+
+    @field_validator("allergen_codes")
+    @classmethod
+    def _validate_allergens(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _validate_allergen_codes(value)
+
+
+class ListingResponse(BaseModel):
+    id: UUID
+    store_id: UUID
+    template_id: UUID | None = None
+    listing_type: ListingType
+    category_id: UUID | None = None
+    title: str
+    description: str | None = None
+    contents_description: str | None = None
+    reference_value: Decimal
+    selling_price: Decimal
+    currency: str = "INR"
+    total_quantity: int
+    reserved_quantity: int = 0
+    sold_quantity: int = 0
+    # COMPUTED, not the stored column: the database never maintains
+    # available_quantity (no trigger, no generated column, and the
+    # reservation function only increments reserved_quantity), and
+    # the authenticated role has SELECT-only on that column, so the
+    # API cannot write it either. The honest value is
+    # total - reserved - sold, computed here. See architecture.md.
+    available_quantity: int
+    sale_starts_at: datetime
+    sale_ends_at: datetime
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    prepared_at: datetime | None = None
+    best_before_at: datetime | None = None
+    allergen_codes: list[str] = []
+    dietary_classification: DietaryClassification = DietaryClassification.unknown
+    storage_instructions: str | None = None
+    food_safety_notes: str | None = None
+    status: ListingStatus
+    published_at: datetime | None = None
+    created_by: UUID
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CategoryResponse(BaseModel):
+    id: UUID
+    parent_id: UUID | None = None
+    name: str
+    slug: str
+    display_order: int = 0
+    is_active: bool = True
+
+
+class ListingImageCreate(BaseModel):
+    """Register an image for a listing. storage_path is validated
+    against the listing-media bucket policy path rule
+    (<listing_id>/<file>) and the allowed mime types are enforced
+    at upload time by the bucket (jpeg/png/webp, 5 MB); the API
+    never trusts a client-supplied URL, only a storage path in
+    this bucket. The file itself must already have been uploaded
+    to that path by the caller with their own token, which the
+    bucket policy authorises only for store operators."""
+
+    storage_path: str = Field(max_length=500)
+    alt_text: str | None = Field(default=None, max_length=200)
+    display_order: int = Field(default=0, ge=0)
+
+    @field_validator("storage_path", mode="before")
+    @classmethod
+    def _validate_path(cls, value: object) -> object:
+        if isinstance(value, str):
+            path = value.strip()
+            if not path or path.startswith("/") or ".." in path.split("/"):
+                raise ValueError(
+                    "storage_path must be a relative path in listing-media"
+                )
+            return path
+        return value
+
+    @field_validator("alt_text")
+    @classmethod
+    def _strip_alt(cls, value: str | None) -> str | None:
+        return _optional_stripped(value)
+
+
+class ListingImageResponse(BaseModel):
+    id: UUID
+    listing_id: UUID
+    storage_path: str
+    alt_text: str | None = None
+    display_order: int = 0
+    created_at: datetime | None = None
+
+
+class InventoryAvailabilityResponse(BaseModel):
+    listing_id: UUID
+    store_id: UUID
+    status: ListingStatus
+    total_quantity: int
+    reserved_quantity: int
+    sold_quantity: int
+    available_quantity: int
+    # The stored available_quantity column is NOT used here: it is
+    # unmaintained by the database (see ListingResponse). This is
+    # the computed figure the reservation function should be
+    # checking, and the figure merchants should act on.
+    sale_ends_at: datetime
+    pickup_ends_at: datetime
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str

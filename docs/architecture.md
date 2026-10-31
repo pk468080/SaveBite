@@ -321,6 +321,201 @@ Explicitly deferred: merchant approval/document verification,
 store activation, listings, inventory, ordering, payments,
 pickup, refunds, delivery, and any schema change.
 
+## Milestone 4: Listings and inventory — Stage 1 audit (read-only,
+verified against the live database 2026-10-31, NOT applied)
+
+### Tables and constraints (exact, from baseline + live checks)
+
+- `listings`: id, store_id FK, template_id FK (SET NULL), listing_type
+  (`surprise_bag` | `individual_item`), category_id FK, title NOT NULL,
+  description, contents_description, reference_value numeric(12,2)
+  >= 0, selling_price numeric(12,2) >= 0, currency CHECK = 'INR',
+  total_quantity > 0, reserved_quantity >= 0 default 0,
+  sold_quantity >= 0 default 0, available_quantity integer NULLABLE
+  with NO default and NO generated expression, sale_starts_at
+  default now(), sale_ends_at, pickup_starts_at, pickup_ends_at,
+  prepared_at, best_before_at, allergen_codes text[] default '{}'
+  (NO enum, NO check — format validation only), dietary_classification
+  (`vegetarian` | `non_vegetarian` | `vegan` | `egg` | `unknown`,
+  default 'unknown'), storage_instructions, food_safety_notes,
+  status (`draft` | `scheduled` | `active` | `paused` | `sold_out` |
+  `expired` | `cancelled`, default 'draft'), published_at NULL,
+  created_by FK auth.users, created_at/updated_at.
+  CHECKs: reserved+sold <= total; sale_ends > sale_starts;
+  pickup_ends > pickup_starts; pickup_ends >= sale_ends;
+  best_before IS NULL OR best_before >= prepared_at.
+  Only trigger: set_updated_at on UPDATE.
+- `listing_templates`: store_id, listing_type, category_id, title,
+  reference_value >= 0, default_selling_price >= 0, contents,
+  allergens, dietary, storage_instructions, is_active. No
+  created_by column — templates are store-scoped, not user-scoped.
+- `listing_images`: listing_id FK CASCADE, storage_path,
+  UNIQUE(listing_id, storage_path), alt_text, display_order.
+- `categories`: 15 rows seeded, all is_active=true (Bakery, Bread,
+  Pastries, Cakes and Desserts, Snacks, Prepared Meals, Restaurant
+  Specials, Fruits, Vegetables, Dairy, Groceries, Beverages,
+  Sweets, Packaged Food, Other). parent_id self-FK, slug UNIQUE.
+- `inventory_events`: event_type CHECK (listing_created,
+  quantity_increased, quantity_decreased, reserved,
+  reservation_released, sold, manual_adjustment,
+  listing_cancelled). `inventory_reservations`: quantity > 0,
+  one active reservation per order_item. Neither table has an
+  INSERT RLS policy for authenticated users — only SELECT —
+  so the API must never write them directly.
+
+### RLS policies (live pg_policies, matching baseline)
+
+- listings SELECT (anon+authenticated): public-active (status
+  active AND sale window open AND available_quantity > 0 AND
+  is_store_public) OR can_manage_store(store_id, NULL) OR
+  platform operations/compliance/super admin.
+- listings INSERT (authenticated): created_by = auth.uid() AND
+  can_manage_store(store_id, ['store_manager',
+  'inventory_manager']) — owners/admins pass via can_manage_store.
+- listings UPDATE (authenticated): USING same rule, WITH CHECK
+  same rule AND (status <> 'active' OR (available_quantity > 0
+  AND is_store_public)).
+- listings DELETE: NO policy — DELETE is denied for
+  authenticated users. Cancel is therefore a status update, not
+  a delete, and this API has no delete endpoint.
+- listing_images INSERT (authenticated): listing exists AND
+  can_manage_store(listing.store_id, ['store_manager',
+  'inventory_manager']). SELECT: public-active listing OR member.
+  UPDATE/DELETE: NO policy — images can be registered and
+  listed, but not edited or removed through PostgREST.
+- listing_templates INSERT/UPDATE/SELECT: member rule above;
+  platform operations/super admin on SELECT.
+- categories SELECT (anon+authenticated): is_active only.
+- inventory_events SELECT: listing owner/admin/store_manager/
+  inventory_manager/finance_viewer OR platform
+  operations/finance/super admin. inventory_reservations
+  SELECT: can_view_order only.
+
+### Column grants — the part RLS alone does not show
+
+Table-level grants look like SELECT-only for authenticated, but
+column grants are the real write surface (verified live):
+
+- listings INSERT: every business column EXCEPT id, status,
+  published_at, available_quantity, reserved_quantity,
+  sold_quantity, created_at, updated_at.
+- listings UPDATE: business columns + status, EXCEPT store_id,
+  listing_type, template_id, currency, created_by, and all
+  inventory counters, published_at, id, timestamps.
+- listing_images INSERT: listing_id, storage_path, alt_text,
+  display_order only. No UPDATE/DELETE grant at all.
+- categories: SELECT only.
+
+Consequences the API enforces:
+1. A listing is always created as draft — the API never sends
+   status, and could not even if it tried.
+2. Inventory counters cannot be forged through PostgREST — the
+   API never sends them, and no merchant user can either.
+3. listing_type, store_id, template_id, currency, created_by
+   are immutable after creation through this API.
+4. published_at cannot be stamped on activation through
+   PostgREST — it stays NULL (see gap 2 below).
+
+### Storage bucket listing-media (verified live)
+
+- Public bucket, file_size_limit 5,242,880 bytes (5 MB),
+  allowed_mime_types image/jpeg, image/png, image/webp.
+- INSERT/UPDATE/DELETE policies: path first segment must match
+  the UUID regex AND the listing's store must be manageable by
+  the caller (store_manager/inventory_manager, owners/admins
+  via can_manage_store). SELECT is public for the whole bucket.
+- Therefore the upload path MUST be `<listing_id>/<file>`.
+  The API validates that shape and rejects URLs; the file
+  itself is uploaded by the caller with their own token (the
+  bucket policy authorises them), and the API only registers
+  the storage_path in listing_images. No signed-URL or
+  service-role upload path was added in this milestone.
+
+### Inventory functions — authority stays in the database
+
+- `create_order_reservation` (user RPC) is the ONLY stock
+  reservation path: it locks the listing row, checks status
+  active + windows + `available_quantity < quantity`, then
+  increments reserved_quantity and writes inventory_reservations
+  + inventory_events. This milestone does NOT recreate any of
+  that in Python, and the inventory endpoint is read-only.
+- `backend_release_expired_reservations` is server-only.
+
+### GAPS FOUND — proposed migration, NOT applied, needs approval
+
+Gap 1 (BLOCKS public visibility and activation):
+available_quantity is never maintained. There is no trigger, no
+generated column, and no function updates it: create_order_reservation
+checks it but only increments reserved_quantity. A
+PostgREST-created listing therefore has available_quantity NULL,
+which fails the public-select rule (available > 0) and the
+activation WITH CHECK (available > 0). Activation through the
+current database will fail even for a listing with stock, and a
+NULL check in the reservation function passes vacuously
+(NULL < quantity is NULL, treated as false).
+Proposed fix (choose one, do not apply without approval):
+(a) preferred — make available_quantity GENERATED ALWAYS AS
+(total_quantity - reserved_quantity - sold_quantity) STORED;
+or (b) a BEFORE INSERT/UPDATE trigger maintaining it from the
+same formula. Do NOT fix it by granting INSERT/UPDATE on the
+column to authenticated — that would let any merchant user
+forge stock. Until one of (a)/(b) lands, this API returns
+available_quantity COMPUTED as total - reserved - sold and
+labels it as such, and publish attempts surface the upstream
+rejection honestly instead of claiming success.
+
+Gap 2: published_at has no writer. No trigger sets it on
+activation and the role cannot update it. Proposed fix: set it
+in the same trigger as gap 1, or in a future listing RPC.
+Until then it stays NULL and must not be presented as a
+publish timestamp.
+
+Gap 3: image removal is impossible through current policies
+(no DELETE policy, no DELETE grant on listing_images, and the
+storage DELETE policy exists but would orphan the row).
+Proposed fix, if removal is required: add a
+listing_images_delete_store_operator policy + DELETE column
+grant, and delete the storage object in the same request.
+Until then this API has no image-delete endpoint, by design.
+
+Gap 4: sold_out and expired have no writer either — no
+function or trigger moves a listing into them. They exist in
+the enum but are not API-settable in this milestone; a future
+system job (e.g. expiry sweep, stock depletion in the
+reservation function) must own those transitions.
+
+Gap 5 (accepted, not a defect): the API-level role checks
+duplicate the RLS rules. That is deliberate defence in depth:
+a caller gets a clean 403/404 from the API instead of a raw
+PostgREST rejection, and a future grant/policy change cannot
+silently widen the API.
+
+### Milestone 4 routes (implemented)
+
+- POST /v1/stores/{store_id}/listings (201, draft)
+- GET /v1/stores/{store_id}/listings (any merchant member)
+- GET /v1/listings/{listing_id}
+- PATCH /v1/listings/{listing_id} (whitelisted columns only;
+  total_quantity >= reserved+sold enforced in API)
+- POST /v1/listings/{listing_id}/publish|pause|resume|cancel
+- GET /v1/listings/{listing_id}/inventory (read-only, computed
+  available)
+- GET /v1/categories (active only)
+- GET/POST /v1/listings/{listing_id}/images (register + list;
+  no edit/delete, per gap 3)
+- Validation: Decimal money (never float), selling_price > 0,
+  reference_value >= 0, selling_price above reference is
+  ALLOWED because the database explicitly permits it (only
+  >= 0 checks) — the API does not invent a discount rule;
+  total_quantity > 0; windows per DB CHECKs; best_before >=
+  prepared_at when both set; allergen format only (no invented
+  code list); category must be active; template must belong
+  to the store; storage_path must start with the listing id.
+
+Explicitly NOT in this milestone: customer checkout, Razorpay,
+pickup verification, refunds, delivery, listing deletion,
+image deletion, and any migration or live database change.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this
