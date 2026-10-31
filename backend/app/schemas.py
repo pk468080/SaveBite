@@ -1195,6 +1195,233 @@ class StoreComparison(BaseModel):
     stores: list[StoreComparisonRow]
 
 
+class AdminMerchantSummary(BaseModel):
+    id: UUID
+    legal_name: str
+    display_name: str
+    business_type: str
+    status: str
+    verification_status: str
+    store_count: int
+    created_at: datetime
+    approved_at: datetime | None = None
+
+
+class AdminMerchantDetail(BaseModel):
+    id: UUID
+    legal_name: str
+    display_name: str
+    business_type: str
+    business_email: str | None = None
+    business_phone: str | None = None
+    status: str
+    verification_status: str
+    onboarding_notes: str | None = None
+    created_at: datetime
+    approved_at: datetime | None = None
+    stores: list[AdminStoreSummary] = []
+
+
+class AdminStoreSummary(BaseModel):
+    id: UUID
+    merchant_id: UUID
+    merchant_name: str
+    name: str
+    status: str
+    city: str
+    pincode: str
+    listing_count: int = 0
+    order_count: int = 0
+    created_at: datetime | None = None
+
+
+class AdminStoreDetail(BaseModel):
+    id: UUID
+    merchant_id: UUID
+    merchant_name: str
+    name: str
+    status: str
+    city: str
+    state: str
+    pincode: str
+    address_line_1: str
+    locality: str | None = None
+    timezone: str
+    hours: list[dict] = []
+    listing_count: int = 0
+    order_count: int = 0
+    created_at: datetime | None = None
+
+
+class AdminMerchantReviewRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+    review_notes: str | None = Field(default=None, max_length=1000)
+
+
+class AdminMerchantReviewResponse(BaseModel):
+    merchant_id: UUID
+    status: str
+    verification_status: str
+
+
+class AdminStoreReviewRequest(BaseModel):
+    activate: bool
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class AdminStoreReviewResponse(BaseModel):
+    store_id: UUID
+    activated: bool
+
+
+class AdminListingSummary(BaseModel):
+    id: UUID
+    title: str
+    store_id: UUID
+    store_name: str
+    merchant_name: str
+    selling_price: str
+    currency: str
+    total_quantity: int
+    reserved_quantity: int
+    sold_quantity: int
+    available_quantity: int
+    status: str
+    sale_starts_at: datetime
+    sale_ends_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminOrderSummary(BaseModel):
+    id: UUID
+    order_number: str
+    store_id: UUID
+    store_name: str
+    merchant_name: str
+    status: str
+    payment_status: str
+    total_amount: str
+    currency: str
+    created_at: datetime
+
+
+class AdminDashboard(BaseModel):
+    merchants_total: int
+    merchants_approved: int
+    merchants_pending_review: int
+    stores_total: int
+    stores_active: int
+    stores_draft: int
+    stores_inactive: int
+    stores_suspended: int
+    listings_total: int
+    listings_published: int
+    listings_draft: int
+    listings_paused: int
+    listings_sold_out: int
+    listings_expired: int
+    orders_total: int
+    orders_pending_payment: int
+    orders_confirmed: int
+    orders_ready_for_pickup: int
+    orders_collected: int
+    orders_cancelled_or_expired: int
+    captured_payment_count: int
+    # Sum of order total_amount where payment_status is
+    # captured only. NOT earnings, NOT net revenue.
+    captured_order_value: str
+    failed_payment_count: int
+    pending_payment_count: int
+    reconciliation_required_count: int
+    refund_pending_count: int
+    visible_reviews_total: int
+    average_visible_rating: float | None = None
+    recent_orders: list[AdminOrderSummary] = []
+
+
+class AdminOrderItemSummary(BaseModel):
+    title: str
+    quantity: int
+    unit_price: str
+    line_total: str
+
+
+class AdminOrderEventSummary(BaseModel):
+    from_status: str | None = None
+    to_status: str
+    actor_type: str
+    reason: str | None = None
+    created_at: datetime
+
+
+class AdminOrderDetail(BaseModel):
+    id: UUID
+    order_number: str
+    store_id: UUID
+    store_name: str
+    merchant_name: str
+    status: str
+    payment_status: str
+    total_amount: str
+    currency: str
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    collected_at: datetime | None = None
+    customer_note: str | None = None
+    items: list[AdminOrderItemSummary] = []
+    events: list[AdminOrderEventSummary] = []
+    created_at: datetime
+
+
+class AdminPaymentException(BaseModel):
+    """Payment visibility comes from ORDERS, not from
+    private.payment_transactions (inaccessible by design).
+    No gateway ids, signatures, or provider payloads."""
+
+    order_id: UUID
+    order_number: str
+    store_name: str
+    merchant_name: str
+    amount: str
+    currency: str
+    payment_status: str
+    order_status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminReviewRow(BaseModel):
+    """Admin review visibility is limited by the reviews
+    SELECT policy (visible or own): hidden and
+    under_review reviews are NOT visible to platform
+    admins through the user-context client, so this list
+    shows visible reviews in practice."""
+
+    id: UUID
+    store_id: UUID
+    store_name: str
+    rating: int
+    comment: str | None = None
+    moderation_status: str
+    created_at: datetime
+
+
+class AdminActivityEvent(BaseModel):
+    """Only recorded order_status_events are returned.
+    private.audit_logs (merchant/store review actions)
+    and private.pickup_events / webhook events are NOT
+    readable through the API by design, so they are not
+    fabricated here."""
+
+    order_number: str
+    from_status: str | None = None
+    to_status: str
+    actor_type: str
+    reason: str | None = None
+    created_at: datetime
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str

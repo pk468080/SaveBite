@@ -20,6 +20,7 @@ from app.config import Settings, get_settings
 from app.errors import register_error_handlers
 from app.logging_config import configure_logging, new_request_id, request_id_var
 from app.routers import (
+    admin,
     dashboard,
     health,
     listings,
@@ -100,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(pickups.router)
     app.include_router(reviews.router)
     app.include_router(dashboard.router)
+    app.include_router(admin.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> dict[str, str]:
