@@ -54,7 +54,7 @@ hidden, and it is not needed for the filtered sets here.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -329,6 +329,18 @@ async def _detail_for_order(client: SupabaseRestClient, order: dict) -> OrderDet
     store_row = stores.get(str(order["store_id"]))
     if store_row is None:
         raise NotFoundError("Order not found")
+    # Pickup availability, derived from the order row only:
+    # a confirmed/ready_for_pickup order whose pickup window
+    # has not closed (pickup_ends_at + 30 minutes, the same
+    # grace the issue RPC applies). This says nothing about
+    # whether a token was issued — tokens cannot be read
+    # back — only that a token MAY be issued now.
+    pickup_ends = _parse_time(order["pickup_ends_at"])
+    pickup_available = (
+        order["status"] in ("confirmed", "ready_for_pickup")
+        and pickup_ends is not None
+        and datetime.now(UTC) <= pickup_ends + timedelta(minutes=30)
+    )
     return OrderDetail(
         id=order["id"],
         order_number=order["order_number"],
@@ -351,6 +363,7 @@ async def _detail_for_order(client: SupabaseRestClient, order: dict) -> OrderDet
         pickup_starts_at=_parse_time(order["pickup_starts_at"]),  # type: ignore[arg-type]
         pickup_ends_at=_parse_time(order["pickup_ends_at"]),  # type: ignore[arg-type]
         reservation_expires_at=max(expires) if expires else None,
+        pickup_available=pickup_available,
         items=items,
         timeline=_timeline(events),
     )

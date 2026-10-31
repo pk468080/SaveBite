@@ -966,6 +966,168 @@ change. No database change is proposed for M7: the
 existing RLS policies already support every read above
 through the user-context client.
 
+## Milestone 8: Secure pickup verification and QR collection
+
+### Audit findings (verified from the baseline, not assumed)
+
+- `private.pickup_tokens`: id, order_id, token_hash
+  (SHA256 hex, never plaintext), expires_at, used_at,
+  invalidated_at, failed_attempts, created_at; token_hash
+  is UNIQUE. There is NO public pickup-token table and NO
+  retrieval API: a token's plaintext exists only in the
+  issue response, once.
+- `private.issue_pickup_token(p_order_id uuid) RETURNS
+  jsonb`: SECURITY DEFINER, auth.uid() required; order
+  must belong to the caller and be confirmed or
+  ready_for_pickup (so unpaid, failed, pending_payment,
+  cancelled, expired, and already-collected orders are
+  all rejected with pickup_not_available — payment
+  eligibility is enforced through status, which only
+  reaches confirmed via a verified capture); issuance
+  refused after pickup_ends_at + 30 minutes; previous
+  unused tokens for the order are invalidated; the new
+  token is 32 random bytes hex-encoded (64 hex chars),
+  stored only as its SHA256 hash, expiring at
+  pickup_ends_at + 30 minutes; returns pickup_token_id,
+  pickup_token, expires_at. Note: issuance has NO lower
+  window bound — a token may be issued early, but
+  verification enforces the collection window (below).
+- `private.verify_pickup_token(p_store_id uuid,
+  p_pickup_token text) RETURNS jsonb`: SECURITY DEFINER,
+  auth.uid() required; token must be at least 32 chars;
+  caller must satisfy can_manage_store(store,
+  [store_manager, pickup_operator]) — and by that
+  function's definition, merchant owner/admin members
+  pass as well, while finance_viewer and
+  inventory_manager do NOT; the token row is locked FOR
+  UPDATE and must be unused, uninvalidated, and
+  unexpired; the order is locked FOR UPDATE and must
+  belong to the store, be confirmed/ready_for_pickup,
+  and have payment_status captured; the current time
+  must be within pickup_starts_at - 15 minutes to
+  pickup_ends_at + 30 minutes. Atomically it then marks
+  the token used, sets the order collected with
+  collected_at, writes an order_status_event (actor: the
+  verifying user, type merchant, reason
+  pickup_token_verified) and a pickup_events row
+  (method 'qr', result accepted). A second verification
+  fails because used_at is set, and concurrent
+  verifications are serialised by the FOR UPDATE locks —
+  two collections of one order are impossible at the
+  database level. Returns order_id, order_number, status
+  collected, collected_at. Observation, not a blocker:
+  failed_attempts exists in the schema but is NOT
+  incremented by this function version, so there is no
+  lockout after failed attempts; brute-force protection
+  is the token's 64-hex-char randomness plus the
+  generic failure messages (below).
+- Both RPCs were already in the user-context allowlist;
+  no new RPC, migration, RLS change, or grant change was
+  needed or applied for this milestone.
+
+### Endpoints (authenticated, user-context client only)
+
+- `POST /v1/orders/{order_id}/pickup-token` — customer
+  issues a one-time token for their own eligible order.
+  The order fetch before the RPC only supplies response
+  fields and a clean 404 for another customer's order;
+  ownership and eligibility are the RPC's checks.
+  Response (example): order_id, order_number,
+  pickup_token (plaintext, once only),
+  qr_payload "SB1:<token>", expires_at,
+  pickup_starts_at, pickup_ends_at, store_name,
+  pickup_instructions. pickup_token_id is deliberately
+  NOT returned — the frontend needs the token, not an
+  internal id — and no hash, contact data, or payment
+  data is ever included. A lost token is not retrievable;
+  issuing a fresh one invalidates the old one.
+- `POST /v1/merchant/pickups/verify` — body: store_id,
+  pickup_token (raw token or SB1: payload; the prefix is
+  stripped and the remaining 64 hex chars validated
+  before any RPC call). The store_id is the store where
+  the customer is standing; it is required by the RPC's
+  signature and is NOT trusted as authority — the
+  database checks the caller's authorization for that
+  store AND that the token's order belongs to it, so a
+  wrong store_id fails and can never grant access to
+  another store. Success response (example): order_id,
+  order_number, store_name, status collected,
+  collected_at, items (title + quantity). Item/store
+  enrichment happens AFTER the atomic RPC verification;
+  if those reads fail, the collection is not rolled back
+  — the RPC fields are returned with an empty item list.
+- Customer order detail (`GET /v1/orders/{id}`) gained
+  `pickup_available`: true only for a confirmed or
+  ready_for_pickup order whose pickup window has not
+  closed (pickup_ends_at + 30 minutes). It says nothing
+  about whether a token was issued (that is unreadable
+  by design), and a collected, cancelled, or expired
+  order is never pickup-available. Payment status and
+  fulfilment status stay separate.
+
+### QR payload format
+
+`"SB1:<64-hex-token>"`. SB1 is a version prefix only.
+The payload contains nothing else: no customer name,
+phone, email, payment data, order id, or store id. The
+frontend renders this string as a QR code; the backend
+validates it entirely through the verify RPC. A QR
+payload alone never marks anything collected — only a
+successful RPC verification does, and a used or expired
+token in a QR code fails like any other.
+
+### Store-role permissions for pickup verification
+
+Allowed: merchant owner, merchant admin, store_manager,
+pickup_operator (the first two via can_manage_store's
+owner/admin branch, the latter two via the role list the
+RPC passes). NOT allowed: finance_viewer,
+inventory_manager, and any customer or unauthenticated
+caller. These rules live in the database, not in Python;
+the API maps the RPC's pickup_access_denied (42501) to
+403 and does not bypass or widen it.
+
+### Error responses (privacy-safe by design)
+
+- 401: unauthenticated (both endpoints).
+- 404: order not found / not the caller's (issue only).
+- 422 invalid token format: token is not 64 hex chars
+  after prefix stripping (checked before any RPC call).
+- 422 "Pickup token is invalid, expired, or already
+  used": the RPC's pickup_token_invalid_or_used, which
+  deliberately does not distinguish invalid, expired,
+  and already-used tokens.
+- 422 "Order cannot be collected": the RPC's
+  order_not_collectable, which deliberately does not
+  distinguish unpaid, cancelled, expired, and
+  wrong-store orders.
+- 422 "Outside the pickup window": the RPC's
+  outside_pickup_window.
+- 403 "Not authorized...": pickup_access_denied.
+No failure reveals whether another store has an order
+for a token, and no token hash or private database error
+is ever returned or logged.
+
+### Replay and expiry behavior
+
+Tokens expire at pickup_ends_at + 30 minutes; issuing a
+new token invalidates all previous unused tokens for the
+order; a used token can never be replayed (used_at is
+set atomically with the collection); concurrent
+verifications are serialised by FOR UPDATE locks on
+both the token and the order rows. A repeated scan after
+collection returns the generic invalid/used 422, not a
+second collection and not a leak of the order's state.
+
+### Explicitly NOT in this milestone
+
+Delivery/courier tracking, cancellation, refunds,
+payouts, notifications, reviews, new payment behavior,
+inventory reconciliation, token retrieval, and any live
+schema/RLS/grant/RPC change. No database change is
+proposed: the existing RPCs already implement the full
+required workflow.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this
