@@ -254,6 +254,73 @@ importing the boundaries below, never bypassing them.
    merchant/store memberships are filtered in code as well as in the
    PostgREST query, and forbidden-access tests cover missing roles.
 
+## Milestone 3: Merchant onboarding & store setup
+
+Routes: `POST /v1/merchants/applications`,
+`GET /v1/merchants`, `GET /v1/merchants/{merchant_id}`,
+`POST /v1/merchants/{merchant_id}/stores`,
+`GET /v1/merchants/{merchant_id}/stores`,
+`GET /v1/stores/{store_id}/hours`,
+`PUT /v1/stores/{store_id}/hours`.
+
+Contract, verified against the baseline SQL and generated types
+before implementation (no columns, parameters, or behaviour
+invented):
+
+- `apply_merchant_application(p_legal_name, p_display_name,
+  p_business_type, p_business_email, p_business_phone)` returns
+  the merchant UUID, creates the merchant (`status`
+  `pending_review`, `verification_status` `pending` by DB default)
+  and an `owner` membership for `auth.uid()`. Email/phone are
+  nullable in the DB and optional in the API; when supplied they
+  are format-validated.
+- `create_merchant_store(p_merchant_id, p_name, p_slug,
+  p_address_line_1, p_address_line_2, p_locality, p_city, p_state,
+  p_pincode, p_latitude, p_longitude, p_contact_phone,
+  p_pickup_instructions)` returns the store UUID, requires
+  merchant owner/admin, and creates the store in `draft` status
+  with `country_code` `IN` and `timezone` `Asia/Kolkata` by DB
+  default. Slug is lowercased by the DB; the API lowercases it
+  first so the RPC argument matches the stored value.
+- `upsert_store_hours(p_store_id, p_hours jsonb)` returns the
+  number of processed entries (1-7). Each entry is
+  `{weekday, is_closed, opens_at, closes_at}`; closed days must
+  have no times, open days need both times. It requires
+  `can_manage_store(store_id, ['store_manager'])`.
+
+Authorisation, in API code and in the DB:
+
+- Every route resolves the user through Supabase Auth and uses
+  only the user-context client. Service-role is never used here.
+- Merchant list/detail/store-list require any active merchant
+  membership; store creation requires owner/admin.
+- Store hours require `can_manage_store_hours`, which mirrors
+  the DB function: owners/admins pass with no store-staff row;
+  a store_manager passes only with an active merchant membership
+  as well. Relying on store-staff memberships alone would block
+  owners/admins, which is the bug this design avoids.
+- RLS remains authoritative: a caller who is not a member sees
+  no rows, and the API turns that into 403 (membership-gated
+  routes) or 404 (a store that is not visible to the caller).
+- Upstream PostgREST errors are mapped by PG code in the body
+  (42501 → 403, 22023 → 422, P0002 → 404, otherwise 502), not by
+  HTTP status alone, because PostgREST returns 400 for most PG
+  errors.
+
+Validation (API layer, before any RPC): business-type enum is
+exactly the DB's 10 values; names are stripped and non-empty;
+email format and Indian mobile format when supplied; PIN code
+`^[1-9][0-9]{5}$`; latitude -90..90, longitude -180..180, both
+or neither; hours weekdays 0-6, unique, max 7, min 1, closed
+days have no times, open days have opens_at < closes_at (the
+DB only rejects equal times; the API rejects reversed times too
+as invalid business data). Invalid requests return 422 with the
+standard envelope; no request value is echoed in errors.
+
+Explicitly deferred: merchant approval/document verification,
+store activation, listings, inventory, ordering, payments,
+pickup, refunds, delivery, and any schema change.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this
