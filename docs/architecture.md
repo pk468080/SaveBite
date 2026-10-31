@@ -848,6 +848,124 @@ reservation at confirm time) needs manual review against
 Razorpay's dashboard before any further action — do not
 re-confirm it from the frontend.
 
+## Milestone 7: Order management and customer tracking
+
+### What was audited (verified, not assumed)
+
+- `public.orders`: order_number, customer_id, merchant_id,
+  store_id, status (order_status enum: pending_payment,
+  confirmed, ready_for_pickup, collected, expired,
+  cancelled, refund_pending, refunded), payment_status
+  (created, authorized, captured, failed, refund_pending,
+  partially_refunded, refunded, reconciliation_required),
+  subtotal/discount/platform_fee/tax/total amounts,
+  pickup window, customer_note, cancellation_reason,
+  confirmed_at, collected_at, cancelled_at, created_at,
+  updated_at, plus internal request_idempotency_key and
+  request_hash (never exposed).
+- `public.order_items`: listing snapshot (title,
+  description, allergens, dietary), quantity, unit_price,
+  reference_value_snapshot, line_total. No image column —
+  item images come from listing_images, and only the
+  listing's current public image, which may be absent.
+- `public.order_status_events`: from_status (nullable),
+  to_status, actor_type (customer/merchant/admin/system),
+  reason, created_at. This is the ONLY timeline source.
+- `public.inventory_reservations`: status active/consumed/
+  released/expired, expires_at — the source of
+  reservation_expires_at for pending orders.
+- RLS: orders/items/events/reservations selectable only
+  by the owning customer or a store operator
+  (can_manage_store with owner/admin/store_manager/
+  pickup_operator/finance_viewer); membership rows only by
+  the member or a merchant owner/admin; profiles own-only.
+  The API enforces the same rules in Python on top of RLS,
+  so a permissive upstream cannot widen access.
+
+### Endpoints (all authenticated, user-context client only)
+
+- `GET /v1/orders` — the caller's own orders, filtered by
+  status, payment_status, created_from, created_to;
+  newest first (created_at desc, id desc tiebreak);
+  page/page_size (max 100). List items carry store
+  summary, pickup window, item count, and a two-item
+  preview (batched in one order_items query, not N+1).
+- `GET /v1/orders/{order_id}` — full customer detail:
+  amounts, store address + pickup instructions, pickup
+  window, reservation expiry (pending orders only),
+  snapshot items with prices and current public images,
+  payment summary (status, gateway label, amount paid,
+  paid_at), and the real event timeline. Another
+  customer's order, or a missing one, returns the same
+  404, so existence is never leaked.
+- `GET /v1/merchant/orders` — orders for the caller's
+  authorized stores only, filtered by store_id (which can
+  only narrow the authorized set, never widen it), status,
+  payment_status, pickup_from, pickup_to, and order-number
+  search. No customer personal information is returned:
+  profiles are own-only by RLS, so the API cannot surface
+  customer emails, phones, or addresses, and it does not
+  return customer_id either.
+- `GET /v1/merchant/orders/{order_id}` — merchant detail
+  (same shape as the customer detail, including the
+  customer's order note for fulfilment, still with no
+  customer personal information).
+- `GET /v1/merchant/orders/summary` — counts over
+  authorized stores (optionally store_id and created
+  range): total, awaiting_payment (pending_payment), paid
+  (payment_status captured), upcoming_pickups (confirmed
+  or ready_for_pickup with a future pickup start),
+  completed (collected — the database's completion state;
+  there is no separate 'completed' status),
+  cancelled_or_expired.
+
+### Status honesty rules enforced here
+
+- pending_payment is not paid; captured is not collected;
+  confirmed is not ready_for_pickup. The summary and
+  detail show the stored statuses as-is, including
+  reconciliation_required (never shown as a successful
+  purchase) and expired/cancelled (never shown as an
+  active pickup).
+- The timeline contains only recorded events, labelled
+  from their recorded to_status/reason (reservation
+  created, payment confirmed, ready for pickup, collected,
+  expired, cancelled, refund pending/refunded). With no
+  events, the timeline is empty — history is never
+  guessed from the current status. actor_user_id is never
+  exposed.
+- Payment information comes only from the order row.
+  The private payment_transactions table is never queried;
+  amount_paid is the order total only when payment_status
+  is captured, otherwise 0; gateway_label is "Razorpay"
+  only when a payment exists, because Razorpay is the only
+  gateway implemented — it is not a per-transaction lookup.
+
+### Pagination and performance note
+
+Filters (customer_id, status, payment_status, created
+range, store_id, order-number search, pickup range) are
+sent to PostgREST, so the whole orders table is never
+fetched into Python; items for a page are fetched in one
+batched query. Sorting and pagination are then applied
+over the filtered set. At very large scale, limit/offset
+should move into PostgREST with a count header (the
+current client does not return response headers, so a
+total cannot come from PostgREST today) — documented
+here as a future optimisation, not hidden. No index or
+function was created in the live project for this
+milestone.
+
+### Explicitly NOT in this milestone
+
+Pickup-token generation/verification, QR pickup,
+cancellation workflows, refunds, payouts, delivery
+tracking, notifications, automatic reservation cleanup,
+new payment behaviour, and any live schema/RLS/grant/RPC
+change. No database change is proposed for M7: the
+existing RLS policies already support every read above
+through the user-context client.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

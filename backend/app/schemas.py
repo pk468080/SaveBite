@@ -51,6 +51,19 @@ class OrderStatus(str, Enum):
     refunded = "refunded"
 
 
+class PaymentStatus(str, Enum):
+    """Verified against the live payment_status enum."""
+
+    created = "created"
+    authorized = "authorized"
+    captured = "captured"
+    failed = "failed"
+    refund_pending = "refund_pending"
+    partially_refunded = "partially_refunded"
+    refunded = "refunded"
+    reconciliation_required = "reconciliation_required"
+
+
 class MerchantStatus(str, Enum):
     pending_review = "pending_review"
     additional_information_required = "additional_information_required"
@@ -723,6 +736,180 @@ class WebhookResponse(BaseModel):
     received: bool = True
     processed: bool
     reason: str | None = None
+
+
+class OrderStoreSummary(BaseModel):
+    id: UUID
+    name: str
+    locality: str | None = None
+    city: str
+    state: str
+    pincode: str
+
+
+class OrderStoreDetail(BaseModel):
+    id: UUID
+    name: str
+    address_line_1: str
+    address_line_2: str | None = None
+    locality: str | None = None
+    city: str
+    state: str
+    pincode: str
+    contact_phone: str | None = None
+    pickup_instructions: str | None = None
+
+
+class OrderItemPreview(BaseModel):
+    title: str
+    quantity: int
+
+
+class OrderSummary(BaseModel):
+    """List-view order. No internal fields: no request_
+    idempotency_key, no request_hash, no customer_id (the
+    caller is the customer), no gateway ids, no raw notes."""
+
+    id: UUID
+    order_number: str
+    status: OrderStatus
+    payment_status: PaymentStatus
+    total_amount: Decimal
+    currency: str = "INR"
+    created_at: datetime
+    updated_at: datetime
+    store: OrderStoreSummary
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    item_count: int
+    items_preview: list[OrderItemPreview] = []
+
+
+class OrderListResponse(BaseModel):
+    items: list[OrderSummary] = []
+    total: int
+    page: int
+    page_size: int
+
+
+class OrderItemResponse(BaseModel):
+    """Item details come from the order_items SNAPSHOT (title,
+    description, prices as recorded at reservation time), not
+    from the live listing — so a later listing edit cannot
+    rewrite what the customer ordered. The image, where one
+    exists, is the listing's current public image and may be
+    absent if the listing is no longer public."""
+
+    listing_id: UUID
+    listing_type: ListingType
+    title: str
+    description: str | None = None
+    quantity: int
+    unit_price: Decimal
+    line_total: Decimal
+    reference_value: Decimal
+    dietary_classification: DietaryClassification = DietaryClassification.unknown
+    allergen_codes: list[str] = []
+    image_path: str | None = None
+
+
+class OrderPaymentSummary(BaseModel):
+    """Payment status only — no gateway secrets, signatures,
+    provider payloads, or private transaction fields. The
+    private payment_transactions table is never queried.
+    amount_paid is the order total when payment_status is
+    captured, otherwise 0: capture is the only state in
+    which money is confirmed taken."""
+
+    status: PaymentStatus
+    gateway_label: str | None = None
+    amount_paid: Decimal
+    paid_at: datetime | None = None
+
+
+class OrderTimelineEvent(BaseModel):
+    """One REAL order_status_events row, nothing invented.
+    actor_user_id is never exposed; actor_type (customer /
+    merchant / admin / system) is safe to show. If no events
+    exist, the timeline is empty and the current status
+    fields are the only state shown."""
+
+    status: OrderStatus
+    label: str
+    occurred_at: datetime
+    actor_type: str
+
+
+class OrderDetail(BaseModel):
+    id: UUID
+    order_number: str
+    status: OrderStatus
+    payment: OrderPaymentSummary
+    subtotal_amount: Decimal
+    discount_amount: Decimal
+    platform_fee_amount: Decimal
+    tax_amount: Decimal
+    total_amount: Decimal
+    currency: str = "INR"
+    created_at: datetime
+    updated_at: datetime
+    confirmed_at: datetime | None = None
+    collected_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    customer_note: str | None = None
+    cancellation_reason: str | None = None
+    store: OrderStoreDetail
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    reservation_expires_at: datetime | None = None
+    items: list[OrderItemResponse] = []
+    timeline: list[OrderTimelineEvent] = []
+
+
+class MerchantOrderSummary(BaseModel):
+    """Merchant list view. No customer personal information:
+    no customer_id, email, phone, or address — profiles are
+    own-only by RLS, so the API cannot (and must not) surface
+    customer contact details. Fulfilment runs on the order
+    number, items, and pickup window."""
+
+    id: UUID
+    order_number: str
+    status: OrderStatus
+    payment_status: PaymentStatus
+    total_amount: Decimal
+    currency: str = "INR"
+    created_at: datetime
+    store: OrderStoreSummary
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    item_count: int
+    items_preview: list[OrderItemPreview] = []
+
+
+class MerchantOrderListResponse(BaseModel):
+    items: list[MerchantOrderSummary] = []
+    total: int
+    page: int
+    page_size: int
+
+
+class MerchantOrderQueueSummary(BaseModel):
+    """Counts from real, authorized-store orders only. Paid
+    means payment_status captured; awaiting_payment means
+    order status pending_payment; upcoming_pickups means
+    confirmed or ready_for_pickup with a pickup window not
+    yet started; completed means collected (the database's
+    completion state — there is no separate 'completed'
+    status). Ready-for-pickup is NOT claimed for confirmed
+    orders: confirmed means paid, not yet ready."""
+
+    total: int
+    awaiting_payment: int
+    paid: int
+    upcoming_pickups: int
+    completed: int
+    cancelled_or_expired: int
 
 
 class HealthResponse(BaseModel):

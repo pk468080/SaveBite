@@ -25,6 +25,7 @@ from app.routers import (
     marketplace,
     me,
     merchants,
+    orders,
     payments,
     stores,
 )
@@ -92,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(listings.router)
     app.include_router(marketplace.router)
     app.include_router(payments.router)
+    app.include_router(orders.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> dict[str, str]:
