@@ -1789,6 +1789,66 @@ was changed in W1.
   redirects stream as `NEXT_REDIRECT` + meta refresh
   (standard Next.js behaviour, browsers follow it).
 
+## Web milestone W2: public customer website and marketplace
+
+Built on W1 without a second frontend architecture
+and without any backend, table, policy, RPC, or
+migration change. Every listing, price, availability
+value, location, and rating comes from the existing
+backend; no fake listings, reviews, or statistics.
+
+- Homepage (`/`): hero (city/pincode GET form, no
+  assumed location, no geolocation), How It Works,
+  real categories, "Ending soon" and "Newly listed"
+  sections labelled by their real backend sorts,
+  trust section without invented statistics, footer
+  without fabricated contact/legal links. Header
+  shows an account entry point when the server
+  session exists, Sign in / Get Started otherwise;
+  mobile navigation is a disclosure toggle.
+- Marketplace (`/marketplace`): URL query string is
+  the single source of filter truth; debounced search;
+  city, pincode (validated), single category,
+  listing type, dietary, price range (validated),
+  sort, pagination; desktop sidebar + mobile drawer
+  sharing one FilterPanel with distinct input ids;
+  skeletons, empty, and recoverable error states;
+  stale responses guarded by a request sequence +
+  AbortController; no local filtering anywhere.
+- Listing detail (`/marketplace/[id]`): server
+  component with dynamic metadata; images resolved
+  from listing-media storage paths; discount only
+  when reference_value exceeds selling_price; public
+  store summary; rating summary + visible reviews
+  fetched only here (never per card); unavailable
+  state for ineligible/missing listings; pickup-only
+  explanation and sign-in entry; no reservation or
+  payment action (W3).
+- SEO: homepage/marketplace/detail metadata and
+  canonicals (marketplace canonical is the bare URL
+  to avoid duplicate filter URLs); robots.txt
+  disallowing customer/merchant/admin/auth/API;
+  sitemap with static routes + real listing URLs
+  (paginated, capped at 500, static fallback). No
+  structured data: the API does not supply every
+  required field and none is invented.
+- Image handling: Next.js remotePatterns allow only
+  the Supabase project host + listing-media path
+  prefix; fallback visual when a listing has no image.
+- Fixes to W1 found by W2: split lib/api/client.ts
+  into browser/server modules (server Supabase
+  import broke the production build from client
+  components); config env reads changed to static
+  property access (dynamic indexing is not inlined
+  into browser bundles); ApiClient binds fetch to
+  globalThis (bare fetch throws "Illegal invocation"
+  in browsers).
+- Known gaps (proposed separately, not built): no
+  public store-detail endpoint (store info stays on
+  the detail page); no multi-category filter, distance
+  sorting, or geolocation in the backend; no
+  structured data yet.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

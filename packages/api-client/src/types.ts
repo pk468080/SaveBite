@@ -16,30 +16,85 @@ export interface Page<T> {
   page_size: number;
 }
 
+/**
+ * Verified against backend/app/schemas.py (M5):
+ * PublicListingSummary + PublicStoreSummary +
+ * PublicListingImage. Images carry a STORAGE PATH in
+ * the public listing-media bucket, never a URL — the
+ * frontend resolves it (see apps/web lib/marketplace).
+ * reference_value is the merchant-declared reference
+ * value; a discount is only shown when it exceeds the
+ * selling price. No created_by, created_at, or merchant
+ * internals are ever returned.
+ */
+export interface PublicStoreSummary {
+  id: string;
+  name: string;
+  locality?: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  timezone?: string;
+}
+
+export interface PublicListingImage {
+  storage_path: string;
+  alt_text?: string | null;
+  display_order?: number;
+}
+
+export type ListingTypeValue = "surprise_bag" | "individual_item";
+export type DietaryValue =
+  | "vegetarian"
+  | "non_vegetarian"
+  | "vegan"
+  | "egg"
+  | "unknown";
+export type MarketplaceSortValue =
+  | "newest"
+  | "lowest_price"
+  | "highest_price"
+  | "ending_soon";
+
 export interface MarketplaceListing {
   id: string;
-  store_id: string;
-  store_name?: string;
+  store: PublicStoreSummary;
+  listing_type: ListingTypeValue;
+  category_id?: string | null;
+  category_name?: string | null;
   title: string;
   description?: string | null;
-  listing_type?: string;
+  contents_description?: string | null;
+  reference_value: string;
   selling_price: string;
-  original_price?: string | null;
   currency: string;
   available_quantity: number;
-  sale_starts_at?: string | null;
-  sale_ends_at?: string | null;
-  pickup_starts_at?: string | null;
-  pickup_ends_at?: string | null;
-  category_id?: string | null;
-  image_urls?: string[];
-  created_at: string;
+  dietary_classification: DietaryValue;
+  allergen_codes: string[];
+  storage_instructions?: string | null;
+  sale_starts_at: string;
+  sale_ends_at: string;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  prepared_at?: string | null;
+  best_before_at?: string | null;
+  images: PublicListingImage[];
 }
 
 export interface MarketplaceCategory {
   id: string;
+  parent_id?: string | null;
   name: string;
-  slug?: string | null;
+  slug: string;
+  display_order?: number;
+  is_active?: boolean;
+}
+
+export interface PublicReview {
+  id: string;
+  rating: number;
+  comment?: string | null;
+  created_at: string;
 }
 
 export interface OrderSummary {
@@ -102,10 +157,21 @@ export interface ReviewResponse {
   created_at: string;
 }
 
+/** Verified against backend StoreRatingSummary (M9):
+ * aggregates over PUBLIC (visible) reviews only; a store
+ * with no public reviews has average_rating null, never
+ * a fabricated 5.0. No reviewer names exist in the
+ * public contract and none are invented. */
 export interface StoreRatingSummary {
+  store_id: string;
+  store_name: string;
   average_rating: number | null;
   total_reviews: number;
-  star_counts?: Record<string, number>;
+  five_star: number;
+  four_star: number;
+  three_star: number;
+  two_star: number;
+  one_star: number;
 }
 
 export interface MerchantSummary {

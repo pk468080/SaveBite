@@ -73,7 +73,11 @@ export class ApiClient {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.getAccessToken = options.getAccessToken;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // Bare `fetch` loses its Window binding when stored
+    // and called as this.fetchImpl(...) in browsers
+    // ("Illegal invocation"); bind it. A caller-supplied
+    // fetchImpl (tests) is used as given.
+    this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
   }
 
   async request<T>(

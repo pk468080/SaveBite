@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { ApiError } from "@savebite/api-client";
 import { AppShell } from "@/components/shared/app-shell";
-import { createServerApiClient } from "@/lib/api/client";
+import { createServerApiClient } from "@/lib/api/server";
 
 const ITEMS = [
   { href: "/admin", label: "Platform overview" },
