@@ -2,9 +2,11 @@
 
 GET /health is liveness only and never touches Supabase, so a load
 balancer can use it even when the database is down.
-GET /v1/health/ready is readiness: it checks Supabase Auth health and
-reports whether the service-role key is configured (boolean only,
-never the key). A failed Auth check returns 503, not a 200.
+GET /v1/health/ready is readiness: it checks Supabase Auth AND
+PostgREST health and reports whether Supabase and the service-role
+key are configured (booleans only, never keys). A failed check
+raises ServiceUnavailableError, which becomes HTTP 503 with the
+standard error envelope, not a 200.
 """
 
 from __future__ import annotations

@@ -61,3 +61,55 @@ def test_wildcard_rejected_in_production():
             environment="production",
             allowed_origins=["https://a.example.com", "*"],
         )
+
+
+# --- Environment-source tests ---
+# These construct Settings() with NO arguments, so the values must
+# come from the environment. This is the proof the direct-construction
+# tests above cannot give: without NoDecode, pydantic-settings would
+# JSON-decode ALLOWED_ORIGINS before validation and the plain-URL and
+# comma-separated forms would fail here.
+
+
+def test_env_single_plain_origin(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://app.example.com")
+    settings = Settings()
+    assert settings.allowed_origins == ["https://app.example.com"]
+
+
+def test_env_comma_separated_origins(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://a.example.com,https://b.example.com")
+    settings = Settings()
+    assert settings.allowed_origins == [
+        "https://a.example.com",
+        "https://b.example.com",
+    ]
+
+
+def test_env_json_list_origins(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ALLOWED_ORIGINS", '["https://a.example.com"]')
+    settings = Settings()
+    assert settings.allowed_origins == ["https://a.example.com"]
+
+
+def test_env_invalid_origin_rejected(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "not-a-url")
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.setenv("ALLOWED_ORIGINS", '["not-a-url"]')
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.setenv("ALLOWED_ORIGINS", '{"not": "a list"}')
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_env_production_wildcard_rejected(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "*")
+    with pytest.raises(ValidationError):
+        Settings()

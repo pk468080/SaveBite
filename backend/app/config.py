@@ -12,10 +12,10 @@ from __future__ import annotations
 import json
 import re
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9._:-]+(:\d+)?(/.*)?$")
 
@@ -44,7 +44,14 @@ class Settings(BaseSettings):
     #   ALLOWED_ORIGINS=["https://a.example.com"]
     # A single plain URL, a comma-separated list, and a JSON list are
     # all parsed to the same list[str]. Anything else is rejected.
-    allowed_origins: list[str] = []
+    # NoDecode is essential here: without it, pydantic-settings
+    # JSON-decodes a complex field's environment value BEFORE field
+    # validation, so a plain URL like "https://app.example.com" would
+    # fail JSON decoding and a comma-separated list would never reach
+    # the validator. With NoDecode, the raw environment string reaches
+    # _parse_allowed_origins unchanged, which is what the
+    # environment-source tests in tests/test_cors.py prove.
+    allowed_origins: Annotated[list[str], NoDecode] = []
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

@@ -188,10 +188,19 @@ importing the boundaries below, never bypassing them.
 
 - `GET /health` is liveness only: it never touches Supabase, so a
   load balancer can use it even when the database is down.
-- `GET /v1/health/ready` is readiness: it checks the Supabase Auth
-  health endpoint and reports whether the service-role key is
-  configured (boolean only, never the key). A failed Auth check
-  returns 503 with `status: "degraded"`, not a 200.
+- `GET /v1/health/ready` is readiness: it checks BOTH Supabase Auth
+  (`GET /auth/v1/health` must return 200) AND PostgREST
+  (`GET /rest/v1/` with the publishable key must return 200, no data
+  is read), and reports whether Supabase and the service-role key
+  are configured (booleans only, never keys, URLs, or upstream
+  bodies). On success it returns 200 with `status: "ready"` and a
+  `checks` map. On failure — Supabase not configured, Auth
+  unreachable, or PostgREST unreachable — it raises
+  `ServiceUnavailableError`, which the error handler turns into
+  HTTP 503 with the standard error envelope
+  (`error.code: "SERVICE_UNAVAILABLE"`, plus `request_id`). It does
+  NOT return a 200 with `status: "degraded"`: a degraded dependency
+  is a 503, never a success response.
 
 ## Testing strategy
 
@@ -212,8 +221,10 @@ importing the boundaries below, never bypassing them.
 1. **RPC restrictions are enforced in code, not just documented.**
    `supabase_client.py` now has explicit allowlists: user-context
    clients may only call the 8 user RPCs, service-role clients may
-   only call the 11 `backend_*` RPCs, and unknown RPCs are rejected
-   by both. Service-role clients may not query tables directly at
+   only call the 10 `backend_*` RPCs, and unknown RPCs are rejected
+   by both. (The earlier draft of this section said 11; the actual
+   allowlist in `supabase_client.py` — and the test that asserts it
+   — contains exactly 10 backend RPCs.) Service-role clients may not query tables directly at
    all — privileged work must go through a reviewed `backend_*`
    function. Violations raise `RPCNotAllowedError` before any HTTP
    call, and are covered by `tests/test_supabase_client_restrictions.py`.
@@ -230,7 +241,12 @@ importing the boundaries below, never bypassing them.
 4. **CORS parsing is consistent.** `ALLOWED_ORIGINS` accepts a
    single URL, a comma-separated list, or a JSON list (as in
    `backend/README.md`), validates each origin, and rejects `*` in
-   production at settings construction time.
+   production at settings construction time. The field is
+   `Annotated[list[str], NoDecode]`, so pydantic-settings passes the
+   raw environment string to the validator instead of JSON-decoding
+   it first; environment-source tests in `tests/test_cors.py`
+   construct `Settings()` from real environment variables to prove
+   this, not only from direct constructor arguments.
 5. **Readiness checks Auth and PostgREST.** Both must be reachable
    or readiness returns 503. Responses contain only check names and
    booleans, never URLs, keys, or upstream bodies.
