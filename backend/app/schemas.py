@@ -477,12 +477,11 @@ class ListingResponse(BaseModel):
     total_quantity: int
     reserved_quantity: int = 0
     sold_quantity: int = 0
-    # COMPUTED, not the stored column: the database never maintains
-    # available_quantity (no trigger, no generated column, and the
-    # reservation function only increments reserved_quantity), and
-    # the authenticated role has SELECT-only on that column, so the
-    # API cannot write it either. The honest value is
-    # total - reserved - sold, computed here. See architecture.md.
+    # Same formula as the database-generated column
+    # (total - reserved - sold, recalculated by PostgreSQL).
+    # The authenticated role has SELECT-only on that column, so
+    # the API cannot write it either; this value matches the
+    # stored generated value. See architecture.md.
     available_quantity: int
     sale_starts_at: datetime
     sale_ends_at: datetime
@@ -559,10 +558,9 @@ class InventoryAvailabilityResponse(BaseModel):
     reserved_quantity: int
     sold_quantity: int
     available_quantity: int
-    # The stored available_quantity column is NOT used here: it is
-    # unmaintained by the database (see ListingResponse). This is
-    # the computed figure the reservation function should be
-    # checking, and the figure merchants should act on.
+    # Same formula as the generated column (see ListingResponse):
+    # the figure the reservation function checks, and the figure
+    # merchants should act on.
     sale_ends_at: datetime
     pickup_ends_at: datetime
 

@@ -450,7 +450,7 @@ export type Database = {
         total_quantity: number
         reserved_quantity: number
         sold_quantity: number
-        available_quantity: number | null
+        available_quantity: number
         sale_starts_at: string
         sale_ends_at: string
         pickup_starts_at: string
@@ -482,7 +482,6 @@ export type Database = {
         total_quantity: number
         reserved_quantity?: number
         sold_quantity?: number
-        available_quantity?: number | null
         sale_starts_at?: string
         sale_ends_at: string
         pickup_starts_at: string
@@ -514,7 +513,6 @@ export type Database = {
         total_quantity?: number
         reserved_quantity?: number
         sold_quantity?: number
-        available_quantity?: number | null
         sale_starts_at?: string
         sale_ends_at?: string
         pickup_starts_at?: string

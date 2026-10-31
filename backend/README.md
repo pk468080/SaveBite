@@ -133,8 +133,8 @@ they never touch live Supabase and never use a real secret.
 All routes require a Supabase Auth Bearer token and use the
 user-context client only; the service-role client is never used
 here. See `../docs/architecture.md` for the Stage 1 audit,
-including the column-grant findings and the proposed migration
-that has NOT been applied.
+including the column-grant findings and the corrected
+availability contract (generated column, no migration needed).
 
 | Method | Route | Who can call it | Success |
 | --- | --- | --- | --- |
@@ -160,16 +160,16 @@ Rules that matter, in plain terms:
   delete policy on listings, and there is no delete endpoint.
 - **Inventory counters are never written by this API.**
   Reserved and sold counts change only through the database
-  reservation functions. The `available_quantity` in responses
-  is computed as total − reserved − sold, because the database
-  never maintains its stored column — see the architecture
-  audit. That is also why **publish can fail upstream today**:
-  the database activation check requires the stored
-  available_quantity > 0, which is NULL for PostgREST-created
-  listings. The API checks the computed figure first and
-  returns a clear 422 when there is genuinely no stock, but
-  the stored-column gap needs the proposed migration before
-  publish succeeds live. This is documented, not hidden.
+  reservation functions. `available_quantity` is a generated
+  column in the database — total − reserved − sold, recalculated
+  by PostgreSQL automatically — and the API's response value
+  uses the same formula, so it matches the stored value. The
+  database activation check (available > 0 and a public store)
+  is therefore evaluated against a real, maintained value, and
+  the API checks the computed figure first and returns a clear
+  422 when there is genuinely no stock. No trigger or migration
+  is needed for availability; see the corrected architecture
+  audit. (`published_at` is a separate, still-open issue.)
 - **Images have no delete or edit endpoint**, because
   listing_images has no UPDATE or DELETE policy. Images are
   registered (after the caller uploads the file to

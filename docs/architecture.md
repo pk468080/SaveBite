@@ -331,8 +331,12 @@ verified against the live database 2026-10-31, NOT applied)
   description, contents_description, reference_value numeric(12,2)
   >= 0, selling_price numeric(12,2) >= 0, currency CHECK = 'INR',
   total_quantity > 0, reserved_quantity >= 0 default 0,
-  sold_quantity >= 0 default 0, available_quantity integer NULLABLE
-  with NO default and NO generated expression, sale_starts_at
+  sold_quantity >= 0 default 0, available_quantity integer
+  GENERATED ALWAYS AS
+  (total_quantity - reserved_quantity - sold_quantity) STORED
+  — database-managed, never writable by application code, and
+  recalculated by PostgreSQL whenever the underlying quantities
+  change — sale_starts_at
   default now(), sale_ends_at, pickup_starts_at, pickup_ends_at,
   prepared_at, best_before_at, allergen_codes text[] default '{}'
   (NO enum, NO check — format validation only), dietary_classification
@@ -441,34 +445,53 @@ Consequences the API enforces:
   that in Python, and the inventory endpoint is read-only.
 - `backend_release_expired_reservations` is server-only.
 
-### GAPS FOUND — proposed migration, NOT applied, needs approval
+### Availability — corrected (2026-10-31): no migration needed
 
-Gap 1 (BLOCKS public visibility and activation):
-available_quantity is never maintained. There is no trigger, no
-generated column, and no function updates it: create_order_reservation
-checks it but only increments reserved_quantity. A
-PostgREST-created listing therefore has available_quantity NULL,
-which fails the public-select rule (available > 0) and the
-activation WITH CHECK (available > 0). Activation through the
-current database will fail even for a listing with stock, and a
-NULL check in the reservation function passes vacuously
-(NULL < quantity is NULL, treated as false).
-Proposed fix (choose one, do not apply without approval):
-(a) preferred — make available_quantity GENERATED ALWAYS AS
-(total_quantity - reserved_quantity - sold_quantity) STORED;
-or (b) a BEFORE INSERT/UPDATE trigger maintaining it from the
-same formula. Do NOT fix it by granting INSERT/UPDATE on the
-column to authenticated — that would let any merchant user
-forge stock. Until one of (a)/(b) lands, this API returns
-available_quantity COMPUTED as total - reserved - sold and
-labels it as such, and publish attempts surface the upstream
-rejection honestly instead of claiming success.
+CORRECTION to the Milestone 4 audit: the earlier claim that
+available_quantity was a nullable column without automatic
+calculation was wrong. The verified live definition is:
 
-Gap 2: published_at has no writer. No trigger sets it on
-activation and the role cannot update it. Proposed fix: set it
-in the same trigger as gap 1, or in a future listing RPC.
-Until then it stays NULL and must not be presented as a
-publish timestamp.
+  available_quantity integer GENERATED ALWAYS AS
+  (total_quantity - reserved_quantity - sold_quantity) STORED
+
+That means, in the actual live database:
+
+- Availability is generated from total_quantity minus
+  reserved_quantity minus sold_quantity. PostgreSQL
+  recalculates it automatically whenever any of those three
+  quantities change — no trigger, no application code, and no
+  additional migration is needed for availability.
+- The reservation function locks the listing row, checks
+  available stock (available_quantity < quantity) before
+  reserving, and increments reserved_quantity; PostgreSQL
+  then recalculates the generated column in the same
+  transaction.
+- Merchants cannot directly modify the generated availability
+  value: there is no manual INSERT or UPDATE permission for
+  available_quantity for anon or authenticated, and the API
+  never sends it on create or update.
+- Public visibility and activation therefore work on the
+  generated value: a listing with stock has available > 0 by
+  construction, and the activation WITH CHECK
+  (available_quantity > 0 AND is_store_public) is evaluated
+  against the generated value, not a stale or NULL column.
+- The API's response value total - reserved - sold is the
+  SAME formula as the generated column, so it matches the
+  stored value exactly; it is kept as a read-side computation
+  in code, not as a replacement for the database column.
+
+No trigger for available_quantity was added, and no migration
+was created for this correction — the baseline file was
+corrected to match the live schema, which already works.
+No trigger or additional migration is needed for availability.
+
+Gap 2 (SEPARATE, still open — do not bundle with availability):
+published_at has no writer. No trigger sets it on activation
+and the role cannot update it. This still needs separate
+review and a dedicated implementation plan; until then it
+stays NULL and must not be presented as a publish timestamp.
+No trigger or publication-behaviour change is introduced
+here for published_at.
 
 Gap 3: image removal is impossible through current policies
 (no DELETE policy, no DELETE grant on listing_images, and the
@@ -498,8 +521,8 @@ silently widen the API.
 - PATCH /v1/listings/{listing_id} (whitelisted columns only;
   total_quantity >= reserved+sold enforced in API)
 - POST /v1/listings/{listing_id}/publish|pause|resume|cancel
-- GET /v1/listings/{listing_id}/inventory (read-only, computed
-  available)
+- GET /v1/listings/{listing_id}/inventory (read-only; available
+  is the generated column value, same formula as in code)
 - GET /v1/categories (active only)
 - GET/POST /v1/listings/{listing_id}/images (register + list;
   no edit/delete, per gap 3)
