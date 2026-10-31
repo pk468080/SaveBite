@@ -50,6 +50,29 @@ def verify_razorpay_webhook(
     return verify_razorpay_signature(raw_body, signature, secret_obj.get_secret_value())
 
 
+def verify_checkout_signature(
+    razorpay_order_id: str, razorpay_payment_id: str, signature: str, secret: str
+) -> bool:
+    """Verify a Razorpay Checkout callback signature.
+
+    Canonical format, per Razorpay's Standard Checkout docs:
+    HMAC-SHA256 over ``razorpay_order_id + "|" + razorpay_payment_id``
+    keyed with the API key secret, hex-encoded, compared in
+    constant time. The caller must pass the order id confirmed
+    from Razorpay's own API, never an order id that only the
+    frontend supplied — a valid signature proves Razorpay
+    processed that payment for that Razorpay order, but it does
+    not by itself prove the payment belongs to a SaveBite order
+    or that it was captured (see the payments router, which
+    fetches the payment from Razorpay and checks status and
+    amount before confirming anything)."""
+    if not razorpay_order_id or not razorpay_payment_id or not signature or not secret:
+        return False
+    message = f"{razorpay_order_id}|{razorpay_payment_id}".encode()
+    expected = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature.strip())
+
+
 def validate_idempotency_key(key: str) -> bool:
     """Idempotency keys must be caller-supplied, opaque, and bounded.
     A duplicate key with a different payload must be rejected by the

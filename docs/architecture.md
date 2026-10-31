@@ -668,6 +668,186 @@ refunds, merchant payouts, delivery, new merchant onboarding,
 admin portal, image deletion, published_at repair, and any
 RLS/grant/RPC/schema change.
 
+## Milestone 6: Razorpay payments
+
+### Verified payment lifecycle (from the baseline, not assumed)
+
+- `private.payment_transactions`: order_id, gateway
+  (CHECK razorpay/other), gateway_order_id, gateway_payment_id,
+  amount numeric(12,2) >= 0, currency CHECK = 'INR',
+  status payment_status (created, authorized, captured,
+  failed, refund_pending, partially_refunded, refunded,
+  reconciliation_required), idempotency_key UNIQUE,
+  gateway_signature_verified boolean, captured_at,
+  failure_code, failure_description. Unique partial indexes
+  on (gateway, gateway_order_id) and (gateway,
+  gateway_payment_id) where not null.
+- `private.payment_webhook_events`: gateway, gateway_event_id
+  UNIQUE with gateway, event_type, payload jsonb,
+  signature_verified, processing_status CHECK (received,
+  processing, processed, failed, ignored).
+- Order status enum: pending_payment, confirmed,
+  ready_for_pickup, collected, expired, cancelled,
+  refund_pending, refunded. Payment status enum: see above.
+- `begin_payment_checkout(p_order_id, p_idempotency_key)`
+  (user-context): requires the caller to own the order and
+  the order to be pending_payment with all reservations live
+  (active, not expired); creates or reuses a payment
+  transaction by idempotency key (same key + different
+  order = payment_idempotency_conflict); returns
+  payment_transaction_id, order_id, amount, currency,
+  gateway razorpay.
+- `backend_attach_gateway_order(p_payment_transaction_id,
+  p_gateway_order_id)` (server-only): requires transaction
+  status created; re-attaching the SAME gateway order id is
+  allowed, a different one is a conflict.
+- `backend_confirm_payment_capture(p_payment_transaction_id,
+  p_gateway_payment_id, p_amount, p_signature_verified)`
+  (server-only): refuses unless p_signature_verified is
+  true; returns the order id without side effects when
+  already captured; on amount mismatch sets transaction and
+  order to reconciliation_required; on a non-live
+  reservation likewise; otherwise marks the transaction
+  captured, moves reserved -> sold quantities, consumes
+  reservations, writes inventory events, and confirms the
+  order (pending_payment -> confirmed).
+- `backend_mark_payment_failed(...)` (server-only):
+  refuses a captured payment (captured_payment_cannot_be_
+  failed); otherwise marks the transaction failed and the
+  order payment_status failed (only while pending_payment
+  and no other live transaction exists).
+- `backend_record_payment_webhook_event(p_gateway,
+  p_gateway_event_id, p_event_type, p_payload,
+  p_signature_verified)` (server-only): refuses unless
+  signature verified; inserts with ON CONFLICT (gateway,
+  gateway_event_id) DO NOTHING-equivalent, so a redelivery
+  creates no second row.
+
+### Endpoints
+
+- `POST /v1/orders/{order_id}/checkout` (authenticated,
+  201, header Idempotency-Key 8–128 chars of letters,
+  digits, - or _): user-context begin_payment_checkout,
+  then a server-side Razorpay order for exactly the
+  database amount (Decimal rupees -> integer paise, never
+  float; non-INR rejected), then server-only attach. The
+  Razorpay order carries notes savebite_payment_transaction_
+  id and savebite_order_id. Returns only key_id (public),
+  razorpay_order_id, payment_transaction_id, amount_paise,
+  currency, and the customer's email as prefill. No secret
+  is ever returned or logged.
+- `POST /v1/payments/verify` (authenticated): body
+  razorpay_order_id, razorpay_payment_id, razorpay_signature.
+  The payment is fetched from Razorpay's API server-side;
+  the signature is verified as HMAC-SHA256 over
+  `razorpay_order_id|razorpay_payment_id` with the key
+  secret, computed over the provider-confirmed order id,
+  not a frontend-supplied one; the payment must be
+  captured, INR, and resolvable to a SaveBite transaction
+  via the Razorpay order's notes. Only then is
+  backend_confirm_payment_capture called with the
+  provider-verified amount and p_signature_verified true.
+  A valid signature alone never confirms: an authorized-
+  only payment is rejected, and a replayed verification is
+  a no-op through the RPC's already-captured path.
+- `POST /v1/webhooks/razorpay` (no Supabase Auth; the
+  webhook signature is the authentication): the raw body
+  is verified with HMAC-SHA256 and the webhook secret
+  (X-Razorpay-Signature) BEFORE parsing or acting; missing
+  or invalid signatures get 401 and nothing is processed.
+  The event is recorded first (deduped by gateway + event
+  id, from the X-Razorpay-Event-Id header), then:
+  payment.captured -> provider fetch + confirm (same
+  rules as verify, minus the checkout signature, because
+  the webhook signature was already verified);
+  payment.failed -> provider order notes -> mark_failed
+  (a failure after capture is treated as already_captured,
+  never overwriting the capture); every other event,
+  including order.paid, is recorded and ignored (subscribing
+  to payment.captured is sufficient). A transient provider
+  fetch failure returns 502 so Razorpay retries; an
+  unresolvable mapping returns 200 with a reason, because
+  a retry cannot fix a missing mapping.
+
+### Idempotency and retry behaviour
+
+- Checkout: same key + same order reuses the transaction.
+  A Razorpay API timeout after order creation is treated
+  as ambiguous and is NOT auto-retried (a retry would
+  create a second Razorpay order); the client retries with
+  the same key and the new Razorpay order is attached. An
+  orphaned, unpaid Razorpay order charges nobody.
+- Webhook: record-then-act, so a crash between recording
+  and acting is recovered by Razorpay's retry (the
+  redelivery records the same event id and then acts).
+  Confirm and mark-failed are themselves idempotent /
+  capture-protecting, so duplicate deliveries cannot double
+  capture or overwrite a capture.
+- Verification and webhook in either order are safe: the
+  first confirms, the second is a no-op.
+
+### What is deliberately NOT in this milestone
+
+No refunds, merchant payouts, settlements, delivery, or
+pickup-token workflows. No frontend-reported failure
+endpoint: a frontend failure is not authoritative — only a
+provider-verified webhook justifies mark_failed, and a
+customer closing checkout simply lets the reservation
+expire. No direct private-table access anywhere: the
+service-role client may only call backend_* RPCs, and it
+may not query tables at all.
+
+### Missing capability — PROPOSED, NOT APPLIED
+
+There is no approved RPC that maps a Razorpay gateway
+order id (or a SaveBite order id) back to a payment
+transaction id, and the service-role client is forbidden
+from querying tables, so the gateway-order -> transaction
+mapping is currently resolved through Razorpay's own
+order notes (set by the backend at checkout, read back
+server-side). That works, but it costs an extra provider
+API call and fails closed when notes are absent. The clean
+fix, which needs separate approval and is NOT applied
+here, is one server-only function:
+
+```sql
+-- PROPOSED ONLY — do not apply without a separate approval.
+CREATE OR REPLACE FUNCTION public.backend_get_payment_transaction_by_gateway_order(
+  p_gateway_order_id text
+) RETURNS uuid
+LANGUAGE sql SECURITY DEFINER
+SET search_path TO ''
+AS $$ SELECT id FROM private.payment_transactions
+     WHERE gateway = 'razorpay' AND gateway_order_id = p_gateway_order_id $$;
+```
+
+With it, verification and webhooks could resolve the
+transaction without the notes round-trip, and a checkout-
+status endpoint could recover a lost checkout response
+after a successful attach (today, a repeat checkout in
+that case returns 422 because the new Razorpay order
+conflicts with the already-attached one — the customer is
+not charged, but the original gateway order id cannot be
+re-issued through the API).
+
+### Deployment configuration (manual, by the owner)
+
+Set these in the Render environment (never in source):
+SUPABASE_SERVICE_ROLE_KEY, RAZORPAY_KEY_ID (rzp_test_ in
+test mode, rzp_live_ in production — the key_id is the only
+Razorpay value the API returns), RAZORPAY_KEY_SECRET,
+RAZORPAY_WEBHOOK_SECRET. Razorpay dashboard webhook URL:
+https://<api-domain>/v1/webhooks/razorpay, subscribed to
+payment.captured and payment.failed (order.paid is
+recorded and ignored, so it need not be subscribed).
+Operational rule for pending or ambiguous payments: a
+payment whose provider status is authorized (not captured)
+is never confirmed by this API; a transaction in
+reconciliation_required (amount mismatch or non-live
+reservation at confirm time) needs manual review against
+Razorpay's dashboard before any further action — do not
+re-confirm it from the frontend.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

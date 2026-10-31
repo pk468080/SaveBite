@@ -19,7 +19,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings, get_settings
 from app.errors import register_error_handlers
 from app.logging_config import configure_logging, new_request_id, request_id_var
-from app.routers import health, listings, marketplace, me, merchants, stores
+from app.routers import (
+    health,
+    listings,
+    marketplace,
+    me,
+    merchants,
+    payments,
+    stores,
+)
 
 logger = logging.getLogger("savebite.main")
 
@@ -83,6 +91,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(stores.router)
     app.include_router(listings.router)
     app.include_router(marketplace.router)
+    app.include_router(payments.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> dict[str, str]:

@@ -679,6 +679,52 @@ class ReservationResponse(BaseModel):
     idempotent_replay: bool = False
 
 
+class CheckoutResponse(BaseModel):
+    """Safe checkout fields only. The public key_id may go to
+    the frontend; the key secret, webhook secret, and any
+    internal payment record are never in this response."""
+
+    order_id: UUID
+    payment_transaction_id: UUID
+    key_id: str
+    razorpay_order_id: str
+    amount_paise: int
+    currency: str = "INR"
+    prefill_email: str | None = None
+
+
+class VerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str = Field(min_length=1, max_length=200)
+    razorpay_payment_id: str = Field(min_length=1, max_length=200)
+    razorpay_signature: str = Field(min_length=1, max_length=500)
+
+
+class VerifyPaymentResponse(BaseModel):
+    """`verified` means: the checkout signature was verified
+    against the order id confirmed from Razorpay's own API, the
+    provider payment was fetched server-side and found
+    captured for the provider-verified amount, and
+    backend_confirm_payment_capture was invoked with that
+    amount. It is NOT a claim that the database captured the
+    order in all cases: the RPC itself routes an amount
+    mismatch or a non-live reservation to reconciliation_
+    required instead of capturing, and the order's stored
+    status remains authoritative. See docs/architecture.md."""
+
+    order_id: UUID
+    payment_transaction_id: UUID
+    razorpay_payment_id: str
+    verified: bool = True
+    amount_paise: int
+    currency: str = "INR"
+
+
+class WebhookResponse(BaseModel):
+    received: bool = True
+    processed: bool
+    reason: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str

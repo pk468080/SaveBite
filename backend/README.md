@@ -128,6 +128,45 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 6 routes: Razorpay payments
+
+- `POST /v1/orders/{order_id}/checkout` (authenticated,
+  201, header Idempotency-Key): starts Razorpay checkout
+  for a pending_payment order. Amount comes from the
+  database (Decimal rupees -> paise), never from the
+  request. Returns key_id, razorpay_order_id,
+  payment_transaction_id, amount_paise, currency, and
+  prefill email. No secret is returned.
+- `POST /v1/payments/verify` (authenticated): body
+  razorpay_order_id, razorpay_payment_id, razorpay_signature.
+  Verifies the checkout signature against the order id
+  fetched from Razorpay's API, fetches the payment
+  server-side and requires captured + INR, resolves the
+  transaction via the Razorpay order's notes, then calls
+  backend_confirm_payment_capture with the provider amount.
+  A signature alone never confirms; an authorized-only
+  payment is rejected.
+- `POST /v1/webhooks/razorpay` (no Supabase Auth; the
+  webhook signature is the authentication): verifies
+  X-Razorpay-Signature against the raw body with the
+  webhook secret before parsing or acting (401 otherwise),
+  records the event (deduped by gateway + event id), then
+  payment.captured -> confirm, payment.failed ->
+  mark_failed (never overwriting a capture), other events
+  recorded and ignored.
+
+Configuration (placeholders only; real secrets go in the
+deployment environment, never in source or chat): see
+`.env.example`. Required for deployment: RAZORPAY_KEY_ID,
+RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET, plus the
+existing SUPABASE_SERVICE_ROLE_KEY. Razorpay webhook URL:
+https://<api-domain>/v1/webhooks/razorpay, events
+payment.captured and payment.failed. See
+`../docs/architecture.md` for the full lifecycle,
+idempotency rules, the proposed (not applied) lookup RPC,
+and the operational rule for reconciliation_required
+payments.
+
 ## Milestone 5 routes: marketplace and reservations
 
 Anonymous, read-only discovery — no bearer token needed:
