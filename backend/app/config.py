@@ -9,11 +9,15 @@ configured as deployment secrets.
 
 from __future__ import annotations
 
+import json
+import re
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9._:-]+(:\d+)?(/.*)?$")
 
 
 class Settings(BaseSettings):
@@ -34,7 +38,63 @@ class Settings(BaseSettings):
     razorpay_webhook_secret: SecretStr | None = None
 
     # CORS: empty means no CORS middleware. Never use "*" in production.
+    # Accepted forms (consistent with backend/README.md):
+    #   ALLOWED_ORIGINS=https://app.example.com
+    #   ALLOWED_ORIGINS=https://a.example.com,https://b.example.com
+    #   ALLOWED_ORIGINS=["https://a.example.com"]
+    # A single plain URL, a comma-separated list, and a JSON list are
+    # all parsed to the same list[str]. Anything else is rejected.
     allowed_origins: list[str] = []
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def _parse_allowed_origins(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            raw = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "ALLOWED_ORIGINS must be a URL, a comma-separated list, or a JSON list"
+                    ) from exc
+                if not isinstance(parsed, list):
+                    raise ValueError("ALLOWED_ORIGINS JSON value must be a list")
+                raw = parsed
+            else:
+                raw = [part.strip() for part in text.split(",")]
+        else:
+            raise ValueError("ALLOWED_ORIGINS must be a string or list")
+        origins: list[str] = []
+        for origin in raw:
+            if not isinstance(origin, str) or not origin.strip():
+                raise ValueError(
+                    "ALLOWED_ORIGINS contains an empty or non-string origin"
+                )
+            origin = origin.strip()
+            if origin == "*":
+                origins.append(origin)
+                continue
+            if not _ORIGIN_RE.match(origin):
+                raise ValueError(
+                    f"ALLOWED_ORIGINS contains an invalid origin: {origin!r}"
+                )
+            origins.append(origin.rstrip("/"))
+        return origins
+
+    @model_validator(mode="after")
+    def _reject_production_wildcard(self) -> Settings:
+        if self.environment == "production" and "*" in self.allowed_origins:
+            raise ValueError(
+                "ALLOWED_ORIGINS must not contain '*' when ENVIRONMENT=production"
+            )
+        return self
 
     @field_validator("supabase_url")
     @classmethod

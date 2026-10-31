@@ -15,7 +15,7 @@ boundaries, and security rules.
 cd backend
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -75,8 +75,18 @@ or destructive DDL without a written change plan and explicit approval.
 cd backend
 pytest -q
 ruff check app tests
+ruff format --check app tests
 mypy app
+pip-audit -r requirements.txt
+pip-audit -r requirements-dev.txt
 ```
+
+Dependency versions are fully pinned in `requirements.txt`
+(runtime), `requirements-dev.txt` (test/audit tools), and
+`requirements-lock.txt` (full resolved set, generated with
+`pip freeze` after installing the pinned files). Do not pin Starlette
+independently: FastAPI's own requirement resolves it, and the resolved
+version is recorded in the lock file.
 
 Tests use fakes at the Auth / PostgREST boundary and never hit the
 live Supabase project or use a real secret. A live end-to-end test
@@ -93,6 +103,10 @@ docker run --rm -p 8000:8000 \
   -e SUPABASE_PUBLISHABLE_KEY=<publishable key> \
   savebite-api:0.1.0
 ```
+
+The Dockerfile has no `|| true`: if `pip install` fails, the build
+fails. GitHub Actions (`.github/workflows/ci.yml`) also builds the
+image and smoke-tests `GET /health` on every pull request to main.
 
 The image runs as a non-root user, exposes port 8000, and health-checks
 `GET /health`. Secrets are passed at run time only, never baked in.

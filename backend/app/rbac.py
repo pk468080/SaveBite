@@ -36,6 +36,12 @@ async def get_platform_roles(
     )
     roles: list[PlatformRole] = []
     for row in rows:
+        # Defence in depth: the PostgREST filter above asks for
+        # revoked_at IS NULL, but a revoked record must never grant a
+        # role even if the filter is bypassed, mis-typed, or faked in
+        # a test double. Filter again here.
+        if row.get("revoked_at") is not None:
+            continue
         try:
             roles.append(PlatformRole(row["role"]))
         except (KeyError, ValueError):
@@ -57,6 +63,10 @@ async def get_merchant_roles(
     )
     roles: list[MerchantMemberRole] = []
     for row in rows:
+        # Defence in depth: inactive memberships grant nothing, even
+        # if the PostgREST is_active filter is bypassed.
+        if row.get("is_active") is False:
+            continue
         try:
             roles.append(MerchantMemberRole(row["role"]))
         except (KeyError, ValueError):
@@ -78,6 +88,8 @@ async def get_store_roles(
     )
     roles: list[MerchantMemberRole] = []
     for row in rows:
+        if row.get("is_active") is False:
+            continue
         try:
             roles.append(MerchantMemberRole(row["role"]))
         except (KeyError, ValueError):

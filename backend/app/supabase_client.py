@@ -26,7 +26,43 @@ import httpx
 from app.config import Settings
 from app.errors import ServiceUnavailableError
 
-_PUBLIC_TABLES_ONLY = "public"
+
+class RPCNotAllowedError(ValueError):
+    """Raised when a client tries to call an RPC it is not allowed to
+    call. This is a programmer error, not a user error: it must be
+    caught in development and tests, never silently downgraded to a
+    different client type."""
+
+
+# Explicit allowlists, mirroring the Milestone 1 database contract.
+# Anything not listed here is rejected by both client types.
+USER_CONTEXT_RPCS = frozenset(
+    {
+        "apply_merchant_application",
+        "create_merchant_store",
+        "upsert_store_hours",
+        "create_order_reservation",
+        "begin_payment_checkout",
+        "issue_pickup_token",
+        "verify_pickup_token",
+        "request_refund",
+    }
+)
+
+BACKEND_RPCS = frozenset(
+    {
+        "backend_attach_gateway_order",
+        "backend_mark_payment_failed",
+        "backend_confirm_payment_capture",
+        "backend_record_payment_webhook_event",
+        "backend_release_expired_reservations",
+        "backend_review_merchant",
+        "backend_review_store",
+        "backend_update_refund_status",
+        "backend_post_ledger_transaction",
+        "backend_reverse_ledger_transaction",
+    }
+)
 
 
 class SupabaseRestClient:
@@ -56,6 +92,27 @@ class SupabaseRestClient:
     def _rest_url(self, path: str) -> str:
         return f"{self._settings.supabase_url}/rest/v1/{path}"
 
+    def validate_rpc(self, name: str) -> None:
+        """Enforce the RPC allowlists before any HTTP call is made.
+        Service-role clients may ONLY call backend_* RPCs. User-context
+        clients may ONLY call user-context RPCs. Unknown RPC names are
+        rejected by both, so a typo cannot silently become a privilege
+        escalation."""
+        if self._service_role:
+            if name not in BACKEND_RPCS:
+                raise RPCNotAllowedError(
+                    f"Service-role client may only call backend_* RPCs, not {name!r}"
+                )
+        else:
+            if name in BACKEND_RPCS or name.startswith("backend_"):
+                raise RPCNotAllowedError(
+                    f"User-context client may not call server-only RPC {name!r}"
+                )
+            if name not in USER_CONTEXT_RPCS:
+                raise RPCNotAllowedError(
+                    f"User-context client may only call approved user RPCs, not {name!r}"
+                )
+
     async def query(
         self,
         table: str,
@@ -63,8 +120,17 @@ class SupabaseRestClient:
         select: str = "*",
         filters: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Query a public table through PostgREST. Private tables are
+        """Query a public table through PostgREST with a user-context
+        client only. Service-role clients must NOT query tables
+        directly — they may only call approved backend_* RPCs, so that
+        every privileged operation goes through a reviewed function
+        with its own authorisation checks. Private tables are
         rejected outright — use a backend_* RPC instead."""
+        if self._service_role:
+            raise RPCNotAllowedError(
+                "Service-role client may not query tables directly; "
+                "use an approved backend_* RPC instead"
+            )
         if table.startswith("private."):
             raise ValueError("Private schema tables must not be queried via PostgREST")
         params: dict[str, str] = {"select": select}
@@ -79,12 +145,13 @@ class SupabaseRestClient:
         return data if isinstance(data, list) else []
 
     async def rpc(self, name: str, params: dict[str, Any]) -> Any:
-        """Call a public RPC function. For user-context RPCs the caller
-        must pass a user-context client; for backend_* RPCs the caller
-        must pass a service-role client after its own checks. This
-        method does not decide which — the handler does, and the
-        distinction is documented at every call site in later
-        milestones."""
+        """Call a public RPC function, after validate_rpc() enforces
+        which client type may call it. For user-context RPCs the
+        caller must pass a user-context client; for backend_* RPCs
+        the caller must pass a service-role client after its own
+        authentication, authorisation, validation and (for payments)
+        gateway-verification checks."""
+        self.validate_rpc(name)
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 self._rest_url(f"rpc/{name}"),

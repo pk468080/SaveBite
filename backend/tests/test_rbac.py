@@ -2,9 +2,13 @@ from uuid import UUID
 
 import pytest
 
+from app.errors import AuthorizationError
 from app.rbac import (
     get_merchant_roles,
     get_platform_roles,
+    get_store_roles,
+    require_merchant_role,
+    require_platform_role,
     reviewer_id_for,
     strip_caller_supplied_reviewer,
 )
@@ -38,11 +42,68 @@ async def test_platform_roles_ignore_revoked_and_unknown():
 @pytest.mark.asyncio
 async def test_merchant_roles_parsed():
     fake = FakeSupabaseClient(
-        {"merchant_memberships": [{"role": "owner"}, {"role": "finance_viewer"}]}
+        {
+            "merchant_memberships": [
+                {"role": "owner", "is_active": True},
+                {"role": "finance_viewer", "is_active": True},
+            ]
+        }
     )
     roles = await get_merchant_roles(USER, fake, MERCHANT)
     assert MerchantMemberRole.owner in roles
     assert MerchantMemberRole.finance_viewer in roles
+
+
+@pytest.mark.asyncio
+async def test_revoked_platform_role_grants_nothing():
+    fake = FakeSupabaseClient(
+        {
+            "platform_user_roles": [
+                {"role": "super_admin", "revoked_at": "2026-10-31T00:00:00Z"},
+            ]
+        }
+    )
+    roles = await get_platform_roles(USER, fake)
+    assert roles == []
+
+
+@pytest.mark.asyncio
+async def test_inactive_merchant_and_store_memberships_grant_nothing():
+    fake = FakeSupabaseClient(
+        {
+            "merchant_memberships": [{"role": "owner", "is_active": False}],
+            "store_staff_memberships": [{"role": "store_manager", "is_active": False}],
+        }
+    )
+    assert await get_merchant_roles(USER, fake, MERCHANT) == []
+    store_id = UUID("33333333-3333-4333-8333-333333333333")
+    assert await get_store_roles(USER, fake, store_id) == []
+
+
+@pytest.mark.asyncio
+async def test_forbidden_when_required_platform_role_missing():
+    fake = FakeSupabaseClient({"platform_user_roles": []})
+    checker = require_platform_role(PlatformRole.super_admin)
+    with pytest.raises(AuthorizationError):
+        await checker(user=USER, client=fake)
+
+
+@pytest.mark.asyncio
+async def test_forbidden_when_required_merchant_role_missing():
+    fake = FakeSupabaseClient({"merchant_memberships": []})
+    checker = require_merchant_role(MerchantMemberRole.owner)
+    with pytest.raises(AuthorizationError):
+        await checker(merchant_id=MERCHANT, user=USER, client=fake)
+
+
+@pytest.mark.asyncio
+async def test_allowed_when_required_role_present():
+    fake = FakeSupabaseClient(
+        {"platform_user_roles": [{"role": "super_admin", "revoked_at": None}]}
+    )
+    checker = require_platform_role(PlatformRole.super_admin)
+    result = await checker(user=USER, client=fake)
+    assert result == USER
 
 
 def test_reviewer_id_is_always_the_authenticated_user():

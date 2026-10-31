@@ -6,10 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install runtime dependencies first for layer caching.
+# Install runtime dependencies only. No `|| true` anywhere in this
+# file: if pip install fails, the Docker build MUST fail, so a broken
+# image is never produced or tagged as good.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip uninstall -y pytest pytest-asyncio ruff mypy 2>/dev/null || true
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 

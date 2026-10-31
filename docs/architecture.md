@@ -207,6 +207,37 @@ importing the boundaries below, never bypassing them.
 - Static checks in Milestone 2: `ruff check` and `mypy` (see
   `backend/README.md`). Both must pass before the branch is reviewed.
 
+## Milestone 2 review fixes (same branch, before merge)
+
+1. **RPC restrictions are enforced in code, not just documented.**
+   `supabase_client.py` now has explicit allowlists: user-context
+   clients may only call the 8 user RPCs, service-role clients may
+   only call the 11 `backend_*` RPCs, and unknown RPCs are rejected
+   by both. Service-role clients may not query tables directly at
+   all — privileged work must go through a reviewed `backend_*`
+   function. Violations raise `RPCNotAllowedError` before any HTTP
+   call, and are covered by `tests/test_supabase_client_restrictions.py`.
+2. **Dependencies upgraded and pinned.** FastAPI 0.115.6 (Starlette
+   0.41.3, vulnerable) → FastAPI 0.162.0 (Starlette 1.10.0),
+   Pydantic 2.14.2, Uvicorn 0.54.0, pytest 9.2.0. Starlette is not
+   pinned independently; FastAPI's requirement resolves it and the
+   resolved version is recorded in `backend/requirements-lock.txt`.
+   `pip-audit` is clean on the new pins (see report).
+3. **Dockerfile fails on install failure.** The `|| true` and the
+   test-tool uninstall step are removed. The image installs runtime
+   dependencies only from `requirements.txt`; a failed install fails
+   the build. CI also builds the image and smoke-tests `/health`.
+4. **CORS parsing is consistent.** `ALLOWED_ORIGINS` accepts a
+   single URL, a comma-separated list, or a JSON list (as in
+   `backend/README.md`), validates each origin, and rejects `*` in
+   production at settings construction time.
+5. **Readiness checks Auth and PostgREST.** Both must be reachable
+   or readiness returns 503. Responses contain only check names and
+   booleans, never URLs, keys, or upstream bodies.
+6. **RBAC is filtered twice.** Platform revoked records and inactive
+   merchant/store memberships are filtered in code as well as in the
+   PostgREST query, and forbidden-access tests cover missing roles.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

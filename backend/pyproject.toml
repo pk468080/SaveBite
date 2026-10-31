@@ -4,17 +4,17 @@ version = "0.1.0"
 description = "SaveBite surplus-food marketplace API (FastAPI modular monolith)"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.115.6",
+    "fastapi==0.162.0",
     "httpx==0.28.1",
-    "pydantic==2.10.4",
-    "pydantic-settings==2.7.0",
-    "uvicorn==0.34.0",
+    "pydantic==2.14.2",
+    "pydantic-settings==2.16.2",
+    "uvicorn==0.54.0",
 ]
 
 [project.optional-dependencies]
 test = [
-    "pytest==8.3.4",
-    "pytest-asyncio==0.24.0",
+    "pytest==9.2.0",
+    "pytest-asyncio==1.4.1",
 ]
 
 [tool.pytest.ini_options]
@@ -28,7 +28,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 # B008 is FastAPI's standard Depends()/Security() pattern, not a bug here.
-ignore = ["E501", "B008"]
+# UP042 (StrEnum) is intentionally not applied: str+Enum keeps the
+# existing Pydantic / JSON behaviour of the Milestone 2 schemas.
+ignore = ["E501", "B008", "UP042"]
 
 [tool.mypy]
 python_version = "3.12"
