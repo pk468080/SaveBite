@@ -121,11 +121,75 @@ mapped from the PostgREST error code), 502 upstream failure.
 ```sh
 cd backend
 pytest -q tests/test_merchants.py   # Milestone 3 only
+pytest -q tests/test_listings.py    # Milestone 4 only
 pytest -q                           # full suite
 ```
 
-Milestone 3 tests use fakes and dependency overrides only; they
-never touch live Supabase and never use a real secret.
+Milestone 3 and 4 tests use fakes and dependency overrides only;
+they never touch live Supabase and never use a real secret.
+
+## Milestone 4 routes: listings and inventory
+
+All routes require a Supabase Auth Bearer token and use the
+user-context client only; the service-role client is never used
+here. See `../docs/architecture.md` for the Stage 1 audit,
+including the column-grant findings and the proposed migration
+that has NOT been applied.
+
+| Method | Route | Who can call it | Success |
+| --- | --- | --- | --- |
+| GET | `/v1/categories` | Authenticated user | 200, active categories only |
+| POST | `/v1/stores/{store_id}/listings` | Merchant owner/admin, store_manager, inventory_manager | 201, always draft |
+| GET | `/v1/stores/{store_id}/listings` | Any active merchant member | 200 |
+| GET | `/v1/listings/{listing_id}` | Any active merchant member | 200 |
+| PATCH | `/v1/listings/{listing_id}` | Same as create | 200, whitelisted columns only |
+| POST | `/v1/listings/{listing_id}/publish` | Same as create | 200, draft/scheduled/paused → active |
+| POST | `/v1/listings/{listing_id}/pause` | Same as create | 200, active → paused |
+| POST | `/v1/listings/{listing_id}/resume` | Same as create | 200, paused → active |
+| POST | `/v1/listings/{listing_id}/cancel` | Same as create | 200, any non-terminal → cancelled |
+| GET | `/v1/listings/{listing_id}/inventory` | Any active merchant member | 200, read-only, computed available |
+| GET | `/v1/listings/{listing_id}/images` | Any active merchant member | 200 |
+| POST | `/v1/listings/{listing_id}/images` | Same as create | 201, registers a listing-media path |
+
+Rules that matter, in plain terms:
+
+- A listing is created as **draft**, always. The database does
+  not let a merchant user set status on create, and this API
+  never tries.
+- **Cancel is a status change, not a delete.** There is no
+  delete policy on listings, and there is no delete endpoint.
+- **Inventory counters are never written by this API.**
+  Reserved and sold counts change only through the database
+  reservation functions. The `available_quantity` in responses
+  is computed as total − reserved − sold, because the database
+  never maintains its stored column — see the architecture
+  audit. That is also why **publish can fail upstream today**:
+  the database activation check requires the stored
+  available_quantity > 0, which is NULL for PostgREST-created
+  listings. The API checks the computed figure first and
+  returns a clear 422 when there is genuinely no stock, but
+  the stored-column gap needs the proposed migration before
+  publish succeeds live. This is documented, not hidden.
+- **Images have no delete or edit endpoint**, because
+  listing_images has no UPDATE or DELETE policy. Images are
+  registered (after the caller uploads the file to
+  `listing-media/<listing_id>/<file>` with their own token,
+  JPEG/PNG/WebP, max 5 MB, enforced by the bucket) and listed.
+- Money is Decimal throughout. Selling price must be positive;
+  a selling price above the reference value is allowed,
+  because the database explicitly permits it (it only checks
+  >= 0) — the API does not invent a discount rule the database
+  does not have.
+- `sold_out` and `expired` are not settable through this API:
+  no database code moves listings into those states yet.
+
+### Milestone 4 local testing
+
+```sh
+cd backend
+pytest -q tests/test_listings.py   # Milestone 4 only
+pytest -q                           # full suite
+```
 
 ## Quick start (local, no secrets required for health)
 

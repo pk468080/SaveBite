@@ -144,6 +144,60 @@ class SupabaseRestClient:
         data = response.json()
         return data if isinstance(data, list) else []
 
+    async def insert(self, table: str, row: dict[str, Any]) -> list[dict[str, Any]]:
+        """Insert one row through PostgREST with a user-context
+        client only. Service-role clients must NOT write tables
+        directly — see query(). RLS policies and column grants are
+        the enforcement point: a column the caller has no INSERT
+        grant on (for listings: id, status, published_at,
+        available_quantity, reserved_quantity, sold_quantity) must
+        never appear in `row`, or PostgREST rejects the whole
+        insert. Returns the inserted rows (Prefer:
+        return=representation)."""
+        if self._service_role:
+            raise RPCNotAllowedError(
+                "Service-role client may not write tables directly; "
+                "use an approved backend_* RPC instead"
+            )
+        if table.startswith("private."):
+            raise ValueError("Private schema tables must not be written via PostgREST")
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                self._rest_url(table),
+                headers={**self._headers(), "Prefer": "return=representation"},
+                json=row,
+            )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+
+    async def update(
+        self, table: str, row: dict[str, Any], filters: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """Update rows through PostgREST with a user-context client
+        only. Same service-role and private-schema guards as
+        insert(). `row` must contain only columns the caller has an
+        UPDATE grant on — for listings that excludes store_id,
+        listing_type, template_id, currency, created_by, and all
+        inventory counters."""
+        if self._service_role:
+            raise RPCNotAllowedError(
+                "Service-role client may not write tables directly; "
+                "use an approved backend_* RPC instead"
+            )
+        if table.startswith("private."):
+            raise ValueError("Private schema tables must not be written via PostgREST")
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.patch(
+                self._rest_url(table),
+                headers={**self._headers(), "Prefer": "return=representation"},
+                params=filters,
+                json=row,
+            )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+
     async def rpc(self, name: str, params: dict[str, Any]) -> Any:
         """Call a public RPC function, after validate_rpc() enforces
         which client type may call it. For user-context RPCs the
