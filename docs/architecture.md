@@ -1736,6 +1736,59 @@ product decision; unread and operationally relevant
 records must not be deleted without an approved rule,
 and source business records are never deleted.
 
+## Web milestone W1: website frontend foundation
+
+Website-first strategy: one Next.js website
+(`apps/web`) serves the public site, customer app,
+merchant portal, and admin portal, consuming the
+existing FastAPI backend and Supabase project. No
+second backend, database, or auth system was created,
+and no backend code, table, policy, RPC, or migration
+was changed in W1.
+
+- Stack: Next.js 15 (App Router) + React 19 +
+  TypeScript strict, Tailwind CSS v4 (CSS-first),
+  shadcn/ui-style Radix primitives, Lucide, Zod +
+  React Hook Form, `@supabase/ssr` cookie sessions.
+  Package manager: npm workspaces at the repository
+  root (`apps/*`, `packages/*`); a single root
+  `package-lock.json`, no second lockfile.
+- Shared API client (`packages/api-client`,
+  framework-independent for future React Native
+  reuse): Bearer token injection, FastAPI error
+  envelope parsing, timeouts, cancellation,
+  idempotency keys, typed service modules for the
+  verified M2–M12 routes. No business rules inside.
+- Auth: Supabase Auth only; sessions in cookies;
+  access token sent as Bearer to FastAPI. App shells
+  redirect unauthenticated visitors to `/sign-in`;
+  the admin shell additionally verifies admin access
+  through the backend (`GET /v1/admin/dashboard`,
+  401/403 → `/unauthorized`). Navigation is never a
+  security mechanism; the M11 admin-gate limitation
+  (ops/super only) still applies and is not bypassed
+  in the frontend.
+- Routes (shells + placeholders, full list in
+  `apps/web/README.md`): public `/`, `/marketplace`,
+  `/sign-in`, `/sign-up`, `/unauthorized`; customer,
+  merchant, and admin shells with separate
+  navigation; global not-found, error boundary, and
+  loading states.
+- Design system: brand-green primary, warm neutrals,
+  tokens in `app/globals.css`, light + OS-preference
+  dark theme, primitives for button/input/select/
+  checkbox/dialog/dropdown/card/badge/table/tabs/
+  skeleton/toast/alert/loading/empty/error. Brand is
+  text + icon only; no logo invented.
+- Known W1 limitations: ESLint uses a standalone
+  flat config because `eslint-config-next`'s bundled
+  patch fails under npm workspaces (documented in
+  the web README); Playwright browsers are not
+  installed by `npm install` and need a one-time
+  `npx playwright install chromium`; app-shell
+  redirects stream as `NEXT_REDIRECT` + meta refresh
+  (standard Next.js behaviour, browsers follow it).
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this
