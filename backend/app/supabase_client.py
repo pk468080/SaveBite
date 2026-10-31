@@ -72,10 +72,18 @@ class SupabaseRestClient:
         *,
         token: str | None = None,
         service_role: bool = False,
+        anonymous: bool = False,
     ) -> None:
         self._settings = settings
         self._token = token
         self._service_role = service_role
+        # Anonymous, read-only client (Milestone 5, customer
+        # discovery). It uses the publishable key as the anon
+        # credential, exactly as Supabase's anon role does, and it
+        # can NEVER write or call an RPC — insert/update/rpc raise
+        # before any HTTP call. It must never be given a
+        # service-role key, and it never carries a user identity.
+        self._anonymous = anonymous
 
     def _headers(self) -> dict[str, str]:
         if self._service_role:
@@ -84,6 +92,13 @@ class SupabaseRestClient:
                 raise ServiceUnavailableError("Service-role key is not configured")
             secret = key.get_secret_value()
             return {"apikey": secret, "Authorization": f"Bearer {secret}"}
+        if self._anonymous:
+            publishable = self._settings.supabase_publishable_key
+            if not publishable:
+                raise ServiceUnavailableError(
+                    "Supabase publishable key is not configured"
+                )
+            return {"apikey": publishable, "Authorization": f"Bearer {publishable}"}
         return {
             "apikey": self._settings.supabase_publishable_key,
             "Authorization": f"Bearer {self._token or ''}",
@@ -112,6 +127,12 @@ class SupabaseRestClient:
                 raise RPCNotAllowedError(
                     f"User-context client may only call approved user RPCs, not {name!r}"
                 )
+
+    def _require_not_anonymous(self, operation: str) -> None:
+        if self._anonymous:
+            raise RPCNotAllowedError(
+                f"Anonymous client is read-only and may not {operation}"
+            )
 
     async def query(
         self,
@@ -154,6 +175,7 @@ class SupabaseRestClient:
         never appear in `row`, or PostgREST rejects the whole
         insert. Returns the inserted rows (Prefer:
         return=representation)."""
+        self._require_not_anonymous("insert rows")
         if self._service_role:
             raise RPCNotAllowedError(
                 "Service-role client may not write tables directly; "
@@ -180,6 +202,7 @@ class SupabaseRestClient:
         UPDATE grant on — for listings that excludes store_id,
         listing_type, template_id, currency, created_by, and all
         inventory counters."""
+        self._require_not_anonymous("update rows")
         if self._service_role:
             raise RPCNotAllowedError(
                 "Service-role client may not write tables directly; "
@@ -205,6 +228,7 @@ class SupabaseRestClient:
         the caller must pass a service-role client after its own
         authentication, authorisation, validation and (for payments)
         gateway-verification checks."""
+        self._require_not_anonymous("call RPCs")
         self.validate_rpc(name)
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -219,6 +243,17 @@ class SupabaseRestClient:
 def user_client(settings: Settings, token: str) -> SupabaseRestClient:
     """Build a user-context client. Token is forwarded unchanged."""
     return SupabaseRestClient(settings, token=token, service_role=False)
+
+
+def anon_client(settings: Settings) -> SupabaseRestClient:
+    """Build the anonymous, read-only client for customer
+    discovery. It authenticates as Supabase's anon role with the
+    publishable key only — never a service-role key, never a user
+    token — and its insert/update/rpc methods raise before any
+    HTTP call. RLS public policies are the enforcement point for
+    what it can read; the API additionally filters to eligible
+    listings and projects only public fields."""
+    return SupabaseRestClient(settings, anonymous=True)
 
 
 def service_client(settings: Settings) -> SupabaseRestClient:

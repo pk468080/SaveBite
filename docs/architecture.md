@@ -539,6 +539,135 @@ Explicitly NOT in this milestone: customer checkout, Razorpay,
 pickup verification, refunds, delivery, listing deletion,
 image deletion, and any migration or live database change.
 
+## Milestone 5: Customer marketplace & reservation
+
+### Anonymous versus authenticated access
+
+- Discovery (`GET /v1/marketplace/listings`,
+  `GET /v1/marketplace/listings/{listing_id}`,
+  `GET /v1/marketplace/categories`) requires NO bearer token.
+  It uses a dedicated anonymous client (`anon_client` in
+  supabase_client.py, `get_anon_client` dependency) that
+  authenticates as Supabase's anon role with the publishable
+  key only. That client is read-only by construction: its
+  insert, update, and rpc methods raise before any HTTP call,
+  it never carries a user token, and it never uses the
+  service-role key. The existing authenticated client behaviour
+  is unchanged, and the RPC allowlists and service-role
+  boundaries are untouched.
+- Reservation (`POST /v1/orders/reservations`) REQUIRES
+  Supabase Auth (get_current_user + get_user_client). No
+  caller-supplied user id or role is accepted anywhere:
+  identity comes only from the Auth dependency, and the RPC
+  itself resolves the customer from auth.uid().
+
+### Public discovery rules
+
+Eligibility is enforced twice: by the RLS public policies
+(listings: status active, sale window open, available > 0,
+public store; stores: status active + merchant approved;
+categories: is_active; images: eligible public listing) AND
+by re-checks in the router (same rules, plus category active,
+pickup window not ended, and an explicit field projection).
+Draft, paused, cancelled, sold_out, expired, zero-stock,
+inactive-store, and unapproved-merchant listings are never
+returned; a non-eligible detail request returns 404, not a
+leak of the listing's existence.
+
+Public response fields only (PublicListingSummary): id, store
+(id, name, locality, city, state, pincode, timezone),
+listing_type, category_id, category_name, title, description,
+contents_description, reference_value, selling_price, currency,
+available_quantity (the generated column value), dietary
+classification, allergen codes, storage instructions, sale
+and pickup windows, prepared_at, best_before_at, and image
+references (storage_path in listing-media, alt_text,
+display_order). Excluded by design: created_by, created_at,
+updated_at, template_id, food_safety_notes, total/reserved/
+sold quantities, merchant internals, contact phones, and any
+payment data. Image paths are validated to
+`<listing_id>/<file>`; any URL or foreign path is dropped.
+
+Filters: city (exact, case-insensitive, on the store),
+pincode (six digits), category_id, listing_type, search
+(substring over title/description/contents), min/max selling
+price (Decimal, min <= max), dietary classification.
+Sorting: newest (created_at desc), lowest_price, highest_price,
+ending_soon (sale_ends_at asc), each with an ascending id
+tiebreak so pagination is stable. Pagination: page (default
+1) and page_size (default 20, max 100), applied after
+filtering and sorting; the response carries items, total,
+page, and page_size. Distance sorting is NOT offered: it
+would need a PostGIS RPC or schema change, documented here
+as a future enhancement, not invented.
+
+Pagination note (honest limitation): because city/pincode
+live on stores while listings live on listings, the router
+fetches eligible listings through PostgREST and then filters,
+sorts, and paginates in Python. That is correct for pilot
+scale and for the tested behaviour, but at large catalogue
+scale it should move to a dedicated read RPC with
+server-side pagination. No schema change was made for it in
+this milestone.
+
+### Reservation
+
+`POST /v1/orders/reservations` with header `Idempotency-Key`
+(8–128 characters, validated in the API and by the RPC) and
+body `{store_id, items: [{listing_id, quantity}], customer_note?}`.
+Validation in the API: store/listing UUIDs, 1–20 items,
+unique listing ids, quantity 1–20 per item, note max 1000
+characters. Everything else is the database's authority:
+the RPC locks listing rows, checks active status and sale/
+pickup windows, checks available inventory, rejects items
+from another store, creates the order in pending_payment
+status, increments reserved inventory, writes reservation
+and event records, and enforces idempotency (same key + same
+request hash returns the original order with
+idempotent_replay true and no new expiry; same key with a
+different request is rejected). Expiry is approximately
+5 minutes after creation, as set by the RPC.
+
+Example request:
+
+```sh
+curl -X POST http://127.0.0.1:8000/v1/orders/reservations \
+  -H "Authorization: Bearer <supabase-user-jwt>" \
+  -H "Idempotency-Key: order-2026-10-31-001" \
+  -H "Content-Type: application/json" \
+  -d '{"store_id": "<store-uuid>", "items": [
+    {"listing_id": "<listing-uuid>", "quantity": 2}
+  ], "customer_note": "Please pack separately"}'
+# 201 {"order_id": "<uuid>", "order_number": "SF-20261031-000001",
+#      "status": "pending_payment", "total_amount": "390.00",
+#      "currency": "INR",
+#      "reservation_expires_at": "2026-10-31T12:05:00Z",
+#      "pickup_starts_at": "...", "pickup_ends_at": "...",
+#      "idempotent_replay": false}
+```
+
+A reservation is NOT a completed or paid order. The status
+pending_payment means stock is reserved and payment is still
+due; the customer must not be told payment succeeded or the
+order is fully confirmed. This milestone does NOT call
+begin_payment_checkout, does NOT generate or verify pickup
+tokens, does NOT process refunds, and does NOT touch orders,
+order_items, inventory_reservations, inventory_events, or
+inventory counters directly in Python.
+
+Error responses use the standard envelope: 401
+unauthenticated reservation, 404 listing not found (or not
+eligible), 422 validation (including database validation
+such as insufficient_inventory, listing_not_available, and
+idempotency-key reuse, mapped from the RPC error), 502
+upstream failure.
+
+Explicitly NOT in this milestone: Razorpay checkout or
+payment confirmation, payment webhooks, pickup tokens,
+refunds, merchant payouts, delivery, new merchant onboarding,
+admin portal, image deletion, published_at repair, and any
+RLS/grant/RPC/schema change.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

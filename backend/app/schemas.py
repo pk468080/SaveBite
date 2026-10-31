@@ -565,6 +565,120 @@ class InventoryAvailabilityResponse(BaseModel):
     pickup_ends_at: datetime
 
 
+class MarketplaceSort(str, Enum):
+    newest = "newest"
+    lowest_price = "lowest_price"
+    highest_price = "highest_price"
+    ending_soon = "ending_soon"
+
+
+class PublicStoreSummary(BaseModel):
+    """Public store fields only. No contact phone, no merchant
+    internals, no onboarding data — those are merchant-only."""
+
+    id: UUID
+    name: str
+    locality: str | None = None
+    city: str
+    state: str
+    pincode: str
+    timezone: str = "Asia/Kolkata"
+
+
+class PublicListingImage(BaseModel):
+    """A storage-path reference in the listing-media bucket, never
+    a client-supplied URL. Clients resolve it through the public
+    listing-media bucket."""
+
+    storage_path: str
+    alt_text: str | None = None
+    display_order: int = 0
+
+
+class PublicListingSummary(BaseModel):
+    """Customer-safe listing view. Explicitly excludes created_by,
+    created_at, updated_at, template_id, food_safety_notes and
+    any merchant-only or payment field — even if the database
+    row contains them, this model does not carry them."""
+
+    id: UUID
+    store: PublicStoreSummary
+    listing_type: ListingType
+    category_id: UUID | None = None
+    category_name: str | None = None
+    title: str
+    description: str | None = None
+    contents_description: str | None = None
+    reference_value: Decimal
+    selling_price: Decimal
+    currency: str = "INR"
+    available_quantity: int
+    dietary_classification: DietaryClassification = DietaryClassification.unknown
+    allergen_codes: list[str] = []
+    storage_instructions: str | None = None
+    sale_starts_at: datetime
+    sale_ends_at: datetime
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    prepared_at: datetime | None = None
+    best_before_at: datetime | None = None
+    images: list[PublicListingImage] = []
+
+
+class MarketplaceListingsResponse(BaseModel):
+    items: list[PublicListingSummary] = []
+    total: int
+    page: int
+    page_size: int
+
+
+class ReservationItem(BaseModel):
+    listing_id: UUID
+    quantity: int = Field(ge=1, le=20)
+
+
+class ReservationCreate(BaseModel):
+    """Reservation request. No customer id, role, or payment field
+    is accepted here: identity comes only from the Supabase Auth
+    dependency, and payment is a later milestone (begin_payment_
+    checkout is deliberately NOT called here)."""
+
+    store_id: UUID
+    items: list[ReservationItem] = Field(min_length=1, max_length=20)
+    customer_note: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def _unique_listings(self) -> ReservationCreate:
+        ids = [item.listing_id for item in self.items]
+        if len(set(ids)) != len(ids):
+            raise ValueError("each listing may appear only once per reservation")
+        return self
+
+    @field_validator("customer_note")
+    @classmethod
+    def _strip_note(cls, value: str | None) -> str | None:
+        return _optional_stripped(value)
+
+
+class ReservationResponse(BaseModel):
+    """A reservation, NOT a completed or paid order. status is
+    the order status returned by the RPC (pending_payment on a
+    new reservation); it must never be presented to the customer
+    as payment success or full confirmation. reservation_expires_
+    at is None on an idempotent replay, because the RPC replay
+    response does not carry an expiry."""
+
+    order_id: UUID
+    order_number: str
+    status: OrderStatus
+    total_amount: Decimal
+    currency: str = "INR"
+    reservation_expires_at: datetime | None = None
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    idempotent_replay: bool = False
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str
