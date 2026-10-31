@@ -5,10 +5,18 @@ import type { NextConfig } from "next";
 // from the environment, never from a hardcoded guess:
 // if it is unset, no remote image host is allowed and
 // listing cards fall back to the placeholder visual.
-const supabaseHostname = (() => {
+// W3: protocol follows the URL (https for the real
+// project, http for a local stub/dev Supabase), so
+// listing images work in both environments.
+const supabaseImage = (() => {
   try {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    return url ? new URL(url).hostname : undefined;
+    if (!url) return undefined;
+    const parsed = new URL(url);
+    return {
+      protocol: parsed.protocol === "http:" ? "http" : "https",
+      hostname: parsed.hostname,
+    } as const;
   } catch {
     return undefined;
   }
@@ -19,11 +27,11 @@ const nextConfig: NextConfig = {
   // TypeScript source; transpile it for the browser.
   transpilePackages: ["@savebite/api-client"],
   images: {
-    remotePatterns: supabaseHostname
+    remotePatterns: supabaseImage
       ? [
           {
-            protocol: "https",
-            hostname: supabaseHostname,
+            protocol: supabaseImage.protocol,
+            hostname: supabaseImage.hostname,
             pathname: "/storage/v1/object/public/listing-media/**",
           },
         ]

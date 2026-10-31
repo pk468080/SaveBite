@@ -133,11 +133,62 @@ W2 public marketplace (real, guest-accessible):
   summary, store rating summary, and public visible
   reviews (no reviewer names exist in the API contract
   and none are invented). Ineligible/missing listings
-  render a designed unavailable state. No reservation
-  or payment is started here — that is W3.
+  render a designed unavailable state. Reservation
+  and payment start from the detail page's Add to
+  cart action (W3) — the page itself still creates
+  no reservation or payment.
 
-Detailed screens (checkout, listing editor, QR
-scanner, live dashboards) belong to later milestones.
+W3 customer purchase journey (real, authenticated):
+
+- `/sign-in`, `/sign-up` — Supabase Auth only, with
+  password visibility toggles, password confirmation
+  on sign-up, and a `?next=` redirect that is honoured
+  only for same-site paths (no open redirect).
+  `/forgot-password` + `/reset-password` complete the
+  Supabase recovery flow (one-time code exchanged for
+  a recovery session; expired links report as such).
+- `/customer` — account overview: identity from
+  `GET /v1/me`, recent orders, unread count.
+- `/customer/profile` — read-only by design: no
+  backend endpoint supports editing profile fields,
+  so none are invented and no browser writes to
+  Supabase tables are made.
+- `/cart` — one store per cart (the database
+  enforces same-store reservations). Adding another
+  store's item opens a deliberate Replace-cart dialog;
+  items are never silently dropped. Prices shown are
+  display values; availability can be refreshed from
+  live listings. The cart is NOT a reservation.
+- `/customer/checkout` — creates one reservation from
+  the cart (or pays an existing `?orderId=` pending
+  order; retries never create a second order), shows
+  the backend's order number, totals, pickup window,
+  and a live countdown from the returned absolute
+  expiry. Then opens Razorpay Checkout with the
+  server-provided key, order id, amount, and currency.
+- `/customer/orders/[orderId]/payment` — payment
+  result from the re-read backend order only: success
+  only when payment is captured and the order is
+  confirmed/ready_for_pickup; reconciliation_required
+  is a neutral verification message, never success and
+  never a refund promise.
+- `/customer/orders` — history, newest first, with
+  order-status and payment-status filters and
+  pagination (URL-synced).
+- `/customer/orders/[orderId]` — detail with
+  order-time item snapshots (never live prices),
+  store address + pickup instructions, payment summary
+  kept separate from fulfilment status, and only real
+  recorded timeline events. Another customer's order
+  returns the same safe not-found page as a missing one.
+- `/customer/notifications` — M12 read APIs only:
+  list, unread count badge in the customer nav, mark
+  one as read, mark all as read. No preferences form:
+  PATCH preferences returns 501 (not persisted), so a
+  form would imply settings save, which they do not.
+
+Detailed screens (listing editor, QR scanner, live
+dashboards) belong to later milestones.
 
 ## Public marketplace: API contract (verified, W2)
 
@@ -204,6 +255,119 @@ The chosen location is reflected in the URL.
   capped at 500, hourly revalidation, static-only
   fallback if the backend is unreachable).
 
+## Customer checkout: API contract and rules (verified, W3)
+
+All contracts below were read from the backend source
+(`backend/app/routers/`, `backend/app/schemas.py`),
+not assumed from the brief. The W1 api-client types
+for orders, reservations, and checkout were wrong
+placeholder shapes and were corrected in W3.
+
+- `GET /v1/me` → `{ id, email, platform_roles }`.
+  Identity comes from the verified session only.
+- `POST /v1/orders/reservations` (auth, requires
+  `Idempotency-Key: 8–128 chars of [A-Za-z0-9_-]`):
+  body `{ store_id, items: [{ listing_id, quantity }],
+  customer_note? }`; 1–20 unique listings, quantity
+  1–20 each, same-store enforced by the database.
+  Returns `{ order_id, order_number, status,
+  total_amount, currency, reservation_expires_at,
+  pickup_starts_at, pickup_ends_at,
+  idempotent_replay }`. On a replay,
+  `reservation_expires_at` is null (the RPC replay
+  carries no expiry) — the frontend then re-reads
+  the order detail for the authoritative expiry
+  instead of inventing one.
+- `POST /v1/orders/{order_id}/checkout` (auth,
+  requires `Idempotency-Key`, 201): returns only safe
+  fields `{ order_id, payment_transaction_id, key_id
+  (public), razorpay_order_id, amount_paise, currency,
+  prefill_email? }`. The amount comes from the
+  database; the frontend never calculates it.
+  Retrying with the same key returns the same
+  transaction instead of a second Razorpay order.
+- `POST /v1/payments/verify` (auth): body
+  `{ razorpay_order_id, razorpay_payment_id,
+  razorpay_signature }`. The backend verifies the
+  signature, fetches the payment from Razorpay,
+  requires captured + INR, and confirms through the
+  approved RPC. `verified: true` does NOT by itself
+  mean the order is confirmed: the RPC routes amount
+  mismatches and non-live reservations to
+  `reconciliation_required`, so the frontend always
+  re-reads the order detail after verification before
+  showing success. A Razorpay callback alone never
+  marks an order paid.
+- `GET /v1/orders` (auth, own orders only): filters
+  `status`, `payment_status`, `created_from`,
+  `created_to`; pagination `page`/`page_size`.
+  `GET /v1/orders/{order_id}`: detail with snapshot
+  items, payment summary (`amount_paid` is the total
+  only when captured, else 0), store detail,
+  `reservation_expires_at`, `pickup_available`, and
+  the real `timeline` events. Other customers' orders
+  return the same 404 as missing ones.
+- `GET /v1/notifications`, `/unread-count`,
+  `POST /{id}/read`, `POST /read-all` (M12, own
+  records only). Generation is not active; there are
+  no fake notifications.
+
+### Idempotency-key lifecycle
+
+One logical attempt gets one key, generated once
+(`crypto.randomUUID` without dashes) and stored in
+`sessionStorage` for that attempt: retries,
+re-renders, and StrictMode double effects all reuse
+it. A deliberate new attempt (new cart contents, or
+a fresh checkout after abandoning the previous one)
+gets a fresh key. Keys are never generated per render
+and never stored in `localStorage`. See
+`lib/idempotency.ts`.
+
+### Reservation lifecycle and expiry
+
+The cart is cleared once the backend confirms the
+reservation, so the same cart cannot create a second
+one; the reservation reference lives in
+`sessionStorage` so a refresh recovers it. The
+countdown is driven only by the returned absolute
+expiry and recomputed from `Date.now()` each tick,
+so a suspended tab shows the true remaining time.
+When it reaches zero, the order is re-read from the
+backend — the frontend never changes the order to
+paid, confirmed, or cancelled itself, and never
+assumes an expired reservation has been released
+until the backend state confirms it. A closed
+Razorpay window proves nothing: the order is
+re-read, and only then is a retry offered (pending
+payment) or success shown (captured).
+
+### Razorpay Checkout integration
+
+`lib/razorpay.ts` loads the official script
+(`https://checkout.razorpay.com/v1/checkout.js`)
+exactly once per page lifetime (concurrent callers
+share one promise; a failed load clears it so a
+retry can try again). Checkout opens with the
+server-provided key, Razorpay order id, amount, and
+currency, plus prefill email only when the backend
+supplied one. No key secret, webhook secret, or
+provider payload ever enters browser code. Ambiguous
+cases (network loss after provider capture, failed
+verification) preserve the order reference, re-read
+the order, and show the backend state.
+
+### Security invariants
+
+Supabase Auth is the only identity provider; no
+client-supplied user id is trusted; no service-role
+key, Razorpay secret, or webhook secret is in
+browser code or bundles (verified by the bundle
+scan in the W3 report); no direct browser writes to
+business tables; no client-side payment confirmation
+or inventory deduction; no duplicate reservation
+from retries.
+
 ## Testing
 
 - `apps/web/tests/`: marketplace helpers (pincode,
@@ -211,7 +375,14 @@ The chosen location is reflected in the URL.
   formatting, filter URL round-trip and rejection of
   unknown values), ListingCard (real values, computed
   discount, image fallback, no purchase action),
-  layouts, config.
+  layouts, config, plus W3: cart rules (same-store
+  guard, quantity clamps, 20-item cap, fingerprint,
+  malformed stored carts), order-status labels and
+  countdown math, Razorpay loader (single script
+  injection, immediate resolve when loaded).
+- `packages/api-client/tests/`: W3 service contracts
+  (reservation body + idempotency header, checkout
+  header, verify body, order-list filters).
 - `apps/web/e2e/`: Playwright specs against
   `e2e/stub-api.mjs` (fixed fixture responses in the
   real API shapes, port 8000) plus the Next dev
@@ -222,6 +393,20 @@ The chosen location is reflected in the URL.
   `npx playwright install chromium` once, then
   `npx playwright test` in `apps/web` (requires
   `apps/web/.env.local` from `.env.example`).
+  W3 extends the stub with mocked Supabase Auth
+  (password grant, user, refresh), in-memory
+  reservations/orders, checkout initiation, payment
+  verification, and notifications, and the specs
+  inject a mocked Razorpay Checkout SDK — so the
+  journey spec is a MOCKED end-to-end test, not a
+  production payment test. E2E runs the dev server
+  with Supabase pointed at the stub (see
+  `playwright.config.ts`); if a stale dev server is
+  already running on port 3000 with older env or
+  code, stop it first — Playwright reuses existing
+  servers. The stub does not serve listing image
+  bytes, so image 404 warnings in e2e output are
+  expected and harmless.
 
 ## Known limitations (W2)
 

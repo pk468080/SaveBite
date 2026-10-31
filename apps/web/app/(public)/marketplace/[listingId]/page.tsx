@@ -8,6 +8,7 @@ import type {
   PublicReview,
   StoreRatingSummary,
 } from "@savebite/api-client";
+import { AddToCartButton } from "@/components/cart/add-to-cart-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -245,16 +246,14 @@ export default async function ListingDetailPage({ params }: PageProps) {
                 Pickup only — no delivery
               </p>
               <p className="text-sm text-muted-foreground">
-                To reserve and pay for this listing you need an account.
-                Reservation and checkout arrive in the next milestone; this
-                page does not start a reservation or a payment.
+                Add this to your cart, then sign in at checkout to reserve
+                and pay. Nothing is reserved until the backend confirms
+                your reservation.
               </p>
+              <AddToCartButton listing={listing} />
               <div className="flex flex-wrap gap-2">
-                <Button asChild>
-                  <Link href="/sign-in">Continue to Sign In</Link>
-                </Button>
                 <Button asChild variant="outline">
-                  <Link href="/sign-up">Create Account</Link>
+                  <Link href="/cart">Review cart</Link>
                 </Button>
               </div>
             </CardContent>

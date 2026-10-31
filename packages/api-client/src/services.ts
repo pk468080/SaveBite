@@ -28,6 +28,7 @@ import type {
   ReviewResponse,
   StoreRatingSummary,
   StoreSummary,
+  VerifyPaymentResponse,
 } from "./types";
 
 function query(params: Record<string, string | number | boolean | undefined>): string {
@@ -77,16 +78,22 @@ export const marketplaceService = (client: ApiClient) => ({
 });
 
 /** Customer orders (M5, M7). */
+/** Orders (M5 reservations, M7 customer orders).
+ * Reservation body verified against ReservationCreate:
+ * store_id + items[{listing_id, quantity}] (+ optional
+ * customer_note). 1–20 unique listings, quantity 1–20
+ * each, same-store enforced by the database. The
+ * Idempotency-Key header (8–128 chars) is required. */
 export const ordersService = (client: ApiClient) => ({
   createReservation: (body: {
-    listing_id: string;
-    quantity: number;
-    pickup_window_id?: string;
+    store_id: string;
+    items: Array<{ listing_id: string; quantity: number }>;
+    customer_note?: string;
   }, idempotencyKey: string) =>
     client.post<ReservationResponse>("/v1/orders/reservations", body, {
       idempotencyKey,
     }),
-  listOrders: (params: { status?: string; page?: number; page_size?: number } = {}) =>
+  listOrders: (params: { status?: string; payment_status?: string; created_from?: string; created_to?: string; page?: number; page_size?: number } = {}) =>
     client.get<Page<OrderSummary>>(`/v1/orders${query(params)}`),
   getOrder: (id: string) => client.get<OrderDetail>(`/v1/orders/${id}`),
   listMerchantOrders: (params: { store_id?: string; status?: string; page?: number; page_size?: number } = {}) =>
@@ -95,15 +102,22 @@ export const ordersService = (client: ApiClient) => ({
     client.get<OrderDetail>(`/v1/merchant/orders/${id}`),
 });
 
-/** Payments (M6). */
+/** Payments (M6). Checkout requires an Idempotency-Key
+ * header (8–128 chars); retrying with the SAME key
+ * returns the same transaction instead of creating a
+ * second Razorpay order. Verification is authenticated
+ * and server-side only — the frontend never confirms
+ * payment from the checkout callback alone. */
 export const paymentsService = (client: ApiClient) => ({
-  checkout: (orderId: string) =>
-    client.post<CheckoutResponse>(`/v1/orders/${orderId}/checkout`, {}),
+  checkout: (orderId: string, idempotencyKey: string) =>
+    client.post<CheckoutResponse>(`/v1/orders/${orderId}/checkout`, {}, {
+      idempotencyKey,
+    }),
   verifyPayment: (body: {
     razorpay_order_id: string;
     razorpay_payment_id: string;
     razorpay_signature: string;
-  }) => client.post("/v1/payments/verify", body),
+  }) => client.post<VerifyPaymentResponse>("/v1/payments/verify", body),
 });
 
 /** Pickup verification (M8). */

@@ -9,9 +9,10 @@ test("listing detail shows real price, store, rating, and reviews", async ({ pag
   await expect(page.getByText(/195/)).toBeVisible();
   await expect(page.getByText(/4.50/)).toBeVisible();
   await expect(page.getByText("Great value, fresh food.")).toBeVisible();
-  // Pickup-only messaging, no purchase action in W2.
+  // Pickup-only messaging; W3 adds the item to the
+  // cart, but no reservation or payment starts here.
   await expect(page.getByText("Pickup only — no delivery")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Continue to Sign In" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add to cart" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: /buy|checkout|reserve|pay now/i }),
   ).toHaveCount(0);

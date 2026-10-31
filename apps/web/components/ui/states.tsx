@@ -69,12 +69,12 @@ export function ErrorState({
   );
 }
 
-/** Inline alert banner (info / error). */
+/** Inline alert banner (info / error / success). */
 export function Alert({
   variant = "info",
   children,
 }: {
-  variant?: "info" | "error";
+  variant?: "info" | "error" | "success";
   children: React.ReactNode;
 }) {
   return (
@@ -84,7 +84,9 @@ export function Alert({
         "rounded-md border px-4 py-3 text-sm",
         variant === "error"
           ? "border-destructive/50 bg-destructive/10 text-foreground"
-          : "border-border bg-muted text-foreground",
+          : variant === "success"
+            ? "border-primary/50 bg-primary/10 text-foreground"
+            : "border-border bg-muted text-foreground",
       )}
     >
       {children}

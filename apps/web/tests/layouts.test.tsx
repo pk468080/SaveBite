@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => cleanup());
 import { AppNav } from "@/components/shared/app-nav";
+import { CartProvider } from "@/components/cart/cart-context";
 import { SiteHeader } from "@/components/shared/site-header";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/states";
@@ -23,7 +24,7 @@ vi.mock("next/link", () => ({
 
 describe("public layout", () => {
   it("renders brand, marketplace link, and sign-in entry for guests", () => {
-    render(<SiteHeader authenticated={false} />);
+    render(<CartProvider><SiteHeader authenticated={false} /></CartProvider>);
     expect(screen.getByLabelText("SaveBite home")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Explore Food" })).toHaveAttribute(
       "href",
@@ -33,7 +34,7 @@ describe("public layout", () => {
   });
 
   it("shows an account entry point when authenticated", () => {
-    render(<SiteHeader authenticated={true} />);
+    render(<CartProvider><SiteHeader authenticated={true} /></CartProvider>);
     expect(screen.getByRole("link", { name: "My account" })).toHaveAttribute(
       "href",
       "/customer",
