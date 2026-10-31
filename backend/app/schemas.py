@@ -1422,6 +1422,53 @@ class AdminActivityEvent(BaseModel):
     created_at: datetime
 
 
+class NotificationResponse(BaseModel):
+    id: UUID
+    notification_type: str
+    title: str
+    body: str
+    reference_type: str | None = None
+    reference_id: UUID | None = None
+    read_at: datetime | None = None
+    created_at: datetime
+    is_read: bool = False
+
+
+class NotificationListResponse(BaseModel):
+    items: list[NotificationResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class UnreadCountResponse(BaseModel):
+    unread_count: int
+
+
+class MarkReadResponse(BaseModel):
+    id: UUID
+    read_at: datetime
+    already_read: bool
+
+
+class MarkAllReadResponse(BaseModel):
+    updated_count: int
+
+
+class NotificationPreferencesResponse(BaseModel):
+    """Defaults until the proposed preferences table is
+    approved. persisted=False means these values are the
+    documented defaults, not stored per-user settings."""
+
+    preferences: dict[str, bool]
+    mandatory_categories: list[str]
+    persisted: bool = False
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    preferences: dict[str, bool] = Field(default_factory=dict)
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str

@@ -1605,6 +1605,137 @@ customer impersonation, direct database console
 functionality, and any live schema/RLS/grant/RPC
 change.
 
+## Milestone 12: In-app notifications
+
+### Audit result — what already existed
+
+- `public.notifications` EXISTS (id, user_id FK
+  auth.users CASCADE, notification_type free text,
+  title, body, reference_type, reference_id, read_at,
+  created_at; index on user_id + created_at DESC where
+  unread). Policies: SELECT own and UPDATE own ONLY.
+  There is NO INSERT policy, NO DELETE policy, and no
+  deduplication column or constraint. No function,
+  trigger, or application code writes to it today.
+- `private.notification_outbox` EXISTS (channels push /
+  email / sms / whatsapp; statuses pending /
+  processing / sent / failed / cancelled; attempts;
+  available_at; ready index) but nothing writes to it
+  and nothing processes it. It is dormant external-
+  channel infrastructure, NOT the in-app delivery
+  mechanism — in-app delivery is the notifications
+  table itself. M12 does not activate the outbox.
+- No preferences table, no templates table, no cron
+  or worker configuration, and no Render cron job for
+  SaveBite exist in the repository.
+
+### What is live in M12
+
+- `GET /v1/notifications` — own notifications only,
+  newest first (created_at desc, id desc), pagination
+  database-side (order/limit/offset) with an id-only
+  count, unread-only and event-type filters. Event
+  types are validated against the catalogue; unknown
+  types return 422.
+- `GET /v1/notifications/unread-count` — count from
+  actual rows (read_at IS NULL), caller only.
+- `GET /v1/notifications/{id}` — own rows only;
+  another user's id returns the same 404 as a missing
+  id.
+- `POST /v1/notifications/{id}/read` — owner only,
+  idempotent: re-marking an already-read notification
+  returns the existing read timestamp.
+- `POST /v1/notifications/read-all` — marks only the
+  caller's unread rows read. No user id is accepted
+  from the request.
+- `GET /v1/notifications/preferences` — documented
+  defaults (persisted=false), because no preferences
+  table exists. `PATCH /v1/notifications/preferences`
+  validates (unknown categories and disabling
+  mandatory categories are rejected with 422) and
+  then returns 501, because returning 200 without
+  persisting would lie. Mandatory categories:
+  payment_updates (customers) and operational_alerts
+  (admins) can never be disabled.
+
+### Event catalogue (app/notifications.py)
+
+Customer: reservation_created, payment_captured
+(mandatory), payment_failed (mandatory),
+reservation_expired, pickup_reminder (no scheduler
+yet), pickup_completed, order_cancelled (catalogued
+only — no approved cancellation workflow exists).
+Merchant: new_paid_order, merchant_application_approved,
+merchant_application_rejected, store_approved,
+store_deactivated (actual DB meaning: status
+inactive), merchant_pickup_completed. Admin:
+payment_reconciliation_required (mandatory),
+merchant_application_submitted,
+merchant_application_reviewed. Titles and bodies
+contain only order numbers, store names, and statuses
+— never customer contact data, payment secrets,
+signatures, tokens, webhook payloads, or merchant
+documents. Deep links are navigation hints only
+(reference_type + reference_id); destination APIs
+independently verify permission.
+
+### Recipient rules (verified data only, never request)
+
+- Customer: order.customer_id only.
+- Merchant: merchant owner/admin members plus store
+  staff with role store_manager or pickup_operator for
+  that store; finance_viewer and inventory_manager
+  excluded; inactive members excluded.
+- Admin: operations_admin and super_admin only (M11
+  gate). support_agent, finance_admin, and
+  compliance_admin are excluded for the same
+  verification reason as M11, until the approved fix
+  lands. Revoked rows ignored twice.
+
+### Delivery guarantees (honest)
+
+Generation is NOT live: no INSERT policy and no
+approved creation RPC exist, and the service client
+may not write tables directly, so no route handler
+creates notifications — wiring generation before the
+RPC exists would fail at RLS and must not be done.
+The service builds payloads and resolves recipients,
+but no live code path calls it to write. Once the
+proposed RPC exists, delivery is at-least-once per
+(event, recipient) with deduplication on dedup_key
+(`{event_type}:{source_id}` or `:{window}` for
+reminders); exactly-once is NOT claimed, and a
+notification is never created for a failed business
+operation (emission happens only after success, in
+the same request, never from a frontend callback).
+The full proposal — dedup column + unique index,
+event-type CHECK, backend_create_notification RPC,
+preferences table + RLS, reminder scheduler
+requirement — lives in
+docs/proposals/milestone-12-notification-delivery.md
+and is NOT applied and NOT placed in
+supabase/migrations/ (so it cannot be picked up by
+db push by accident).
+
+### Pickup reminders — unactivated
+
+Eligibility is pure and tested (confirmed or
+ready_for_pickup + payment captured + now inside the
+window: pickup_starts_at - window <= now <
+pickup_starts_at; absolute instants, store timezone
+for display only). No reminder job runs: no scheduler
+exists. The deployment requirement is a 15-minute
+scheduled job (Supabase Cron/pg_cron or a Render cron
+job hitting an authenticated endpoint) emitting with
+per-window dedup keys, only for eligible orders.
+
+### Retention
+
+No cleanup job is implemented. Retention is an open
+product decision; unread and operationally relevant
+records must not be deleted without an approved rule,
+and source business records are never deleted.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this
