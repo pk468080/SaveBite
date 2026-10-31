@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     supabase_publishable_key: str = ""
     # Server-only. Never expose to Expo / Next.js browser code, never log.
     supabase_service_role_key: SecretStr | None = None
+    # Razorpay (Milestone 6). key_id is public and may be returned
+    # to the frontend; both secrets are server-only, never logged,
+    # never returned, never committed. Test-mode keys (rzp_test_)
+    # only in local development and tests.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: SecretStr | None = None
     # Server-only. Required before any Razorpay webhook is accepted.
     razorpay_webhook_secret: SecretStr | None = None
 
@@ -119,6 +125,13 @@ class Settings(BaseSettings):
     def service_role_configured(self) -> bool:
         return self.supabase_service_role_key is not None and bool(
             self.supabase_service_role_key.get_secret_value()
+        )
+
+    @property
+    def razorpay_configured(self) -> bool:
+        return bool(self.razorpay_key_id) and (
+            self.razorpay_key_secret is not None
+            and bool(self.razorpay_key_secret.get_secret_value())
         )
 
     @property

@@ -7,7 +7,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth import fetch_supabase_user
 from app.config import Settings, get_settings
-from app.errors import AuthenticationError
+from app.errors import AuthenticationError, ServiceUnavailableError
+from app.razorpay_client import RazorpayClient
 from app.schemas import AuthenticatedUser
 from app.supabase_client import (
     SupabaseRestClient,
@@ -44,6 +45,19 @@ def get_anon_client(
     it must never be used for a write, an RPC, or a
     merchant-only record."""
     return anon_client(settings)
+
+
+def get_razorpay_client(
+    settings: Settings = Depends(get_settings),
+) -> RazorpayClient:
+    """Razorpay API client. Fails closed when keys are not
+    configured — an unconfigured payment endpoint must reject,
+    not proceed without credentials."""
+    if not settings.razorpay_configured:
+        raise ServiceUnavailableError("Razorpay is not configured")
+    secret = settings.razorpay_key_secret
+    assert secret is not None  # guarded by razorpay_configured
+    return RazorpayClient(settings.razorpay_key_id, secret.get_secret_value())
 
 
 def get_service_client(
