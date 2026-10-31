@@ -1438,6 +1438,173 @@ price optimization, notifications, staff management,
 new merchant roles, frontend redesign, and any live
 schema/RLS/grant/RPC change.
 
+## Milestone 11: Admin dashboard and platform operations
+
+### Platform-admin authorization — the critical audit
+
+Platform roles exist in the database and are the
+authorization source: platform_role enum
+(support_agent, finance_admin, compliance_admin,
+operations_admin, super_admin) on
+public.platform_user_roles, with revoked_at null
+meaning active, enforced by the SECURITY DEFINER
+function has_platform_role(). Roles are NEVER taken
+from the request: the existing RBAC helper reads them
+from the database through the user-context client and
+filters revoked rows again in Python. Merchant
+ownership and store membership are different tables
+and grant nothing here; a frontend-supplied role flag
+is never read.
+
+VERIFIED GAP, fail-closed: the ONLY SELECT policy on
+platform_user_roles is "platform_roles_admin_read",
+which permits reading only when
+has_platform_role([super_admin, operations_admin])
+holds. A support_agent, finance_admin, or
+compliance_admin therefore CANNOT read their own
+platform_user_roles row through the user-context
+client — the RBAC query returns no rows for them,
+even though their role is real and RLS grants them
+data visibility elsewhere. The admin API gate
+therefore accepts ONLY operations_admin and
+super_admin, the two roles whose authorization IS
+verifiable through the user-context query. Support,
+finance, and compliance admins get 403 from the API
+until a verification capability is approved (see
+"Proposed change" below). This is deliberate
+fail-closed behavior, not a bug to work around.
+
+Second layer: the review RPCs re-check the reviewer
+themselves (SECURITY DEFINER, reading
+platform_user_roles directly): backend_review_merchant
+and backend_review_store accept compliance_admin,
+operations_admin, and super_admin, and raise
+reviewer_not_authorized (42501) otherwise. The API
+passes reviewer_id = the authenticated user's id,
+never a client-supplied id, and the RPCs record each
+action in private.audit_logs (actor, action, entity,
+after_data) — that is the audit trail, and it is not
+readable through the API (private schema).
+
+### Endpoints (all gated on operations_admin or
+### super_admin; reads via the caller's user-context
+### client, review actions via the approved service
+### RPCs only)
+
+- `GET /v1/admin/dashboard` — platform counts:
+  merchants (total/approved/pending_review), stores
+  (total/active/draft/inactive/suspended), listings
+  (total/published/draft/paused/sold_out/expired),
+  orders (total/pending_payment/confirmed/
+  ready_for_pickup/collected/cancelled-or-expired),
+  captured payment count and captured order value
+  (payment_status captured only, Decimal as string,
+  NOT earnings or net revenue), failed/pending/
+  reconciliation-required payment counts,
+  refund_pending count, visible review count and
+  average, recent orders (5, no customer personal
+  data). Total registered customers is OMITTED:
+  profiles are own-only by RLS and cannot be counted
+  safely.
+- `GET /v1/admin/merchants` — filters status,
+  verification_status, display_name search (ilike,
+  database-side); legal_name search would need an OR
+  filter the client does not support and is not
+  faked locally. Paginated database-side
+  (order/limit/offset) with an id-only count query.
+  Detail adds business contact info, onboarding
+  notes, approval info, and associated stores.
+- `POST /v1/admin/merchants/{id}/review` — action
+  approve|reject + optional notes, through
+  backend_review_merchant only. Approve requires
+  verification_status verified AND a verified, current
+  FSSAI document — both enforced by the RPC.
+  Invalid transitions and missing documents return
+  422; unknown merchant 404; unauthorized reviewer
+  403.
+- `GET /v1/admin/stores` — filters merchant, status,
+  city, pincode, name search; paginated. Detail adds
+  hours, listing count, order count.
+- `POST /v1/admin/stores/{id}/review` — activate
+  true|false + optional reason, through
+  backend_review_store only. Activation requires an
+  approved + verified merchant, a store location, and
+  store hours — all enforced by the RPC.
+- `GET /v1/admin/listings` — filters merchant (via
+  stores), store, status, category, city (via stores),
+  title search; paginated. Detail-level fields
+  including the read-only generated available_quantity.
+  No admin listing editing, deletion, hiding, or
+  suspension exists: no approved function supports it.
+- `GET /v1/admin/orders` — filters order number
+  (ilike), status, payment_status, store, merchant
+  (via stores); paginated. Detail adds items (snapshot
+  prices) and recorded order events. No customer_id,
+  email, phone, or address is returned.
+- `GET /v1/admin/payments` — payment exception
+  visibility from ORDERS only (payment_status filter).
+  private.payment_transactions is inaccessible by
+  design: no gateway ids, signatures, or provider
+  payloads exist here.
+- `GET /v1/admin/refunds` — orders whose order status
+  OR payment status is refund-related (two
+  database-side queries, merged). Refund-pending is
+  NOT refunded; only status refunded counts as
+  completed, and no refund amounts are estimated. No
+  refund execution exists in this milestone.
+- `GET /v1/admin/reviews` — filters store, rating,
+  moderation_status; paginated. Visibility is limited
+  by the reviews SELECT policy (visible or own):
+  hidden and under_review reviews are NOT visible to
+  platform admins through the user-context client, so
+  this list shows visible reviews in practice. No
+  moderation action exists here.
+- `GET /v1/admin/activity` — recorded
+  order_status_events only, filterable by order
+  number and store. private.audit_logs, pickup_events,
+  and webhook events are not readable through the API
+  by design and are not fabricated.
+
+### Data-access matrix (per-role RLS visibility, for
+### the API gate's two roles — both have full access
+### to the tables above)
+
+Merchants: approved, member, or any platform role.
+Stores: public, member, or ops/compliance/super.
+Listings: public-or-member, or ops/compliance/super.
+Orders: customer, store operator, or
+support/finance/ops/super (not compliance).
+Order items/events: can_view_order, all five platform
+roles. Reviews: visible-or-own. Profiles: own-only.
+Private tables: inaccessible to both clients.
+
+### Proposed change (NOT applied, needs approval)
+
+A verification capability for support, finance, and
+compliance admins — either an additional SELECT
+policy on platform_user_roles permitting a user to
+read their OWN row (user_id = auth.uid()), or a
+dedicated SECURITY DEFINER verification RPC
+(e.g. backend_get_my_platform_roles returning the
+caller's unrevoked roles). Until one is approved and
+applied, those three roles remain API-gated out
+(fail-closed), even though RLS already grants them
+data visibility and the review RPCs already accept
+compliance_admin. No policy, RPC, or bypass was
+created in this milestone.
+
+### Explicitly NOT in this milestone
+
+Admin account creation or promotion, credential
+management, customer deletion or bans, payouts or
+settlements, refund execution or approval, manual
+payment capture or confirmation, arbitrary
+order-status editing, listing deletion or inventory
+editing, review deletion or unrestricted moderation,
+customer impersonation, direct database console
+functionality, and any live schema/RLS/grant/RPC
+change.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

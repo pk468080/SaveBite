@@ -128,6 +128,85 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 11 routes: admin dashboard and platform operations
+
+Platform-admin authorization, verified first:
+platform roles live in public.platform_user_roles
+(support_agent, finance_admin, compliance_admin,
+operations_admin, super_admin), revoked rows excluded,
+enforced by has_platform_role(). Roles are never
+taken from the request. IMPORTANT LIMITATION,
+fail-closed: the only SELECT policy on that table
+permits reading only to super_admin and
+operations_admin, so the API gate accepts ONLY those
+two roles — support, finance, and compliance admins
+cannot be verified through the user-context query and
+get 403 until an own-row read policy or verification
+RPC is approved (see architecture.md). Merchant
+owners and store managers are never platform admins.
+The review RPCs re-check the reviewer themselves
+(compliance/ops/super) and record each action in
+private.audit_logs.
+
+- `GET /v1/admin/dashboard` — platform counts:
+  merchants, stores, listings, orders, captured
+  payment count and captured order value (captured
+  payments only, Decimal as string, NOT earnings or
+  net revenue), failed/pending/reconciliation counts,
+  refund_pending count, visible review count and
+  average, recent orders. Total customers is omitted:
+  profiles are own-only and cannot be counted safely.
+- `GET /v1/admin/merchants` — filters status,
+  verification_status, display_name search; paginated
+  database-side. Detail adds business contact,
+  onboarding notes, approval info, stores.
+- `POST /v1/admin/merchants/{id}/review` —
+  `{"action": "approve"|"reject", "review_notes": "..."}`,
+  through backend_review_merchant only. Approve
+  requires verified status AND a verified, current
+  FSSAI document (RPC-enforced).
+- `GET /v1/admin/stores` — filters merchant, status,
+  city, pincode, name search; paginated. Detail adds
+  hours, listing and order counts.
+- `POST /v1/admin/stores/{id}/review` —
+  `{"activate": true|false, "reason": "..."}`,
+  through backend_review_store only. Activation
+  requires an approved + verified merchant, a store
+  location, and store hours (RPC-enforced).
+- `GET /v1/admin/listings` — filters merchant, store,
+  status, category, city, title search; paginated.
+  Read-only: no admin listing editing or deletion
+  exists, because no approved function supports it.
+- `GET /v1/admin/orders` — filters order number,
+  status, payment_status, store, merchant; paginated.
+  Detail adds items and recorded order events. No
+  customer_id, email, phone, or address is returned.
+- `GET /v1/admin/payments` — payment exception
+  visibility from ORDERS only (payment_status
+  filter). private.payment_transactions is
+  inaccessible by design: no gateway ids, signatures,
+  or provider payloads.
+- `GET /v1/admin/refunds` — orders whose order or
+  payment status is refund-related. Refund-pending is
+  NOT refunded; only status refunded counts as
+  completed, and no refund amounts are estimated. No
+  refund execution exists here.
+- `GET /v1/admin/reviews` — filters store, rating,
+  moderation_status; paginated. Limited by the
+  reviews SELECT policy (visible or own): hidden and
+  under_review reviews are not visible to platform
+  admins through the user-context client. No
+  moderation action exists here.
+- `GET /v1/admin/activity` — recorded
+  order_status_events only (filterable by order
+  number and store). private.audit_logs, pickup
+  events, and webhook events are not readable through
+  the API and are not fabricated.
+
+See `../docs/architecture.md` for the authorization
+audit, the per-role data-access matrix, and the
+proposed verification capability.
+
 ## Milestone 10 routes: merchant dashboard and analytics
 
 Read-only reporting. Every number comes from actual
