@@ -1,0 +1,11 @@
+# SaveBite API — runtime dependencies only (used by Dockerfile).
+# Pinned exactly. FastAPI 0.162.0 requires Starlette 1.10.0, which is
+# above the minimum secure Starlette version 0.49.1. Do not pin
+# Starlette independently to an incompatible version: let FastAPI's
+# own requirement resolve it, and record the resolved version in
+# requirements-lock.txt.
+fastapi==0.162.0
+httpx==0.28.1
+pydantic==2.14.2
+pydantic-settings==2.16.2
+uvicorn==0.54.0

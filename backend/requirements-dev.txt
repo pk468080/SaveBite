@@ -1,0 +1,9 @@
+# SaveBite API — development / test / audit dependencies.
+# Install after requirements.txt: pip install -r requirements-dev.txt
+# pytest was upgraded from 8.3.4 (vulnerable, PYSEC-2026-1845) to 9.2.0.
+-r requirements.txt
+pytest==9.2.0
+pytest-asyncio==1.4.1
+ruff==0.17.3
+mypy==2.4.1
+pip-audit==2.10.1
