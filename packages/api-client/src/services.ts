@@ -13,19 +13,34 @@ import type {
   AdminDashboard,
   CheckoutResponse,
   CurrentUser,
+  InventoryAvailability,
+  InventoryDashboard,
+  ListingDetail,
+  ListingImage,
   ListingSummary,
   MarketplaceCategory,
   MarketplaceListing,
+  MerchantApplicationCreate,
   MerchantDashboard,
+  MerchantOrderQueueSummary,
+  MerchantOrderSummary,
   MerchantSummary,
   NotificationItem,
   NotificationPreferences,
   OrderDetail,
   OrderSummary,
   Page,
+  PickupDashboard,
+  PickupVerifyResponse,
   PublicReview,
   ReservationResponse,
   ReviewResponse,
+  SalesAnalytics,
+  StoreComparison,
+  StoreCreateBody,
+  StoreDetail,
+  StoreHoursResponse,
+  StoreHoursUpdateResponse,
   StoreRatingSummary,
   StoreSummary,
   VerifyPaymentResponse,
@@ -96,10 +111,27 @@ export const ordersService = (client: ApiClient) => ({
   listOrders: (params: { status?: string; payment_status?: string; created_from?: string; created_to?: string; page?: number; page_size?: number } = {}) =>
     client.get<Page<OrderSummary>>(`/v1/orders${query(params)}`),
   getOrder: (id: string) => client.get<OrderDetail>(`/v1/orders/${id}`),
-  listMerchantOrders: (params: { store_id?: string; status?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<OrderSummary>>(`/v1/merchant/orders${query(params)}`),
+  listMerchantOrders: (params: {
+    store_id?: string;
+    status?: string;
+    payment_status?: string;
+    pickup_from?: string;
+    pickup_to?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  } = {}) =>
+    client.get<Page<MerchantOrderSummary>>(`/v1/merchant/orders${query(params)}`),
   getMerchantOrder: (id: string) =>
     client.get<OrderDetail>(`/v1/merchant/orders/${id}`),
+  getMerchantOrderSummary: (params: {
+    store_id?: string;
+    created_from?: string;
+    created_to?: string;
+  } = {}) =>
+    client.get<MerchantOrderQueueSummary>(
+      `/v1/merchant/orders/summary${query(params)}`,
+    ),
 });
 
 /** Payments (M6). Checkout requires an Idempotency-Key
@@ -128,7 +160,7 @@ export const pickupService = (client: ApiClient) => ({
       {},
     ),
   verifyPickupToken: (body: { store_id: string; pickup_token: string }) =>
-    client.post("/v1/merchant/pickups/verify", body),
+    client.post<PickupVerifyResponse>("/v1/merchant/pickups/verify", body),
 });
 
 /** Reviews and ratings (M9). */
@@ -144,11 +176,34 @@ export const reviewsService = (client: ApiClient) => ({
 });
 
 /** Merchants, stores, listings, inventory (M3, M4). */
+/** Merchants, stores, listings, inventory (M3, M4).
+ * Store detail has no dedicated endpoint: detail
+ * pages assemble a store from listStores and match
+ * by id, so an id outside the caller's memberships
+ * simply is not found. */
 export const merchantsService = (client: ApiClient) => ({
   listMerchants: () => client.get<MerchantSummary[]>("/v1/merchants"),
   getMerchant: (id: string) => client.get<MerchantSummary>(`/v1/merchants/${id}`),
+  submitApplication: (body: MerchantApplicationCreate) =>
+    client.post<MerchantSummary>("/v1/merchants/applications", body),
   listStores: (merchantId: string) =>
-    client.get<StoreSummary[]>(`/v1/merchants/${merchantId}/stores`),
+    client.get<StoreDetail[]>(`/v1/merchants/${merchantId}/stores`),
+  createStore: (merchantId: string, body: StoreCreateBody) =>
+    client.post<StoreDetail>(`/v1/merchants/${merchantId}/stores`, body),
+  getStoreHours: (storeId: string) =>
+    client.get<StoreHoursResponse>(`/v1/stores/${storeId}/hours`),
+  updateStoreHours: (
+    storeId: string,
+    hours: Array<{
+      weekday: number;
+      is_closed: boolean;
+      opens_at?: string | null;
+      closes_at?: string | null;
+    }>,
+  ) =>
+    client.put<StoreHoursUpdateResponse>(`/v1/stores/${storeId}/hours`, { hours }),
+  listCategories: () =>
+    client.get<MarketplaceCategory[]>("/v1/categories"),
   listStoreListings: (storeId: string) =>
     client.get<ListingSummary[]>(`/v1/stores/${storeId}/listings`),
 });
@@ -157,9 +212,65 @@ export const merchantsService = (client: ApiClient) => ({
 export const merchantDashboardService = (client: ApiClient) => ({
   getDashboard: (params: { store_id?: string; from?: string; to?: string } = {}) =>
     client.get<MerchantDashboard>(`/v1/merchant/dashboard${query(params)}`),
+  getSales: (params: {
+    store_id?: string;
+    from?: string;
+    to?: string;
+    group_by?: "day" | "week" | "month";
+  } = {}) =>
+    client.get<SalesAnalytics>(`/v1/merchant/dashboard/sales${query(params)}`),
+  getInventory: (params: {
+    store_id?: string;
+    low_stock_threshold?: number;
+  } = {}) =>
+    client.get<InventoryDashboard>(
+      `/v1/merchant/dashboard/inventory${query(params)}`,
+    ),
+  getPickups: (params: {
+    store_id?: string;
+    from?: string;
+    to?: string;
+    category?: "upcoming" | "in_window" | "completed" | "window_expired";
+  } = {}) =>
+    client.get<PickupDashboard>(`/v1/merchant/dashboard/pickups${query(params)}`),
+  getStoreComparison: (params: { from?: string; to?: string } = {}) =>
+    client.get<StoreComparison>(`/v1/merchant/dashboard/stores${query(params)}`),
 });
 
 /** Platform admin operations (M11). */
+/** Listings: create, read, update, transitions,
+ * inventory, images (M4). Listings are always
+ * created as draft; status moves only through the
+ * transition endpoints. Images are registered only
+ * after the file itself is uploaded to the
+ * listing-media bucket at <listing_id>/<file>;
+ * listing_images has no UPDATE or DELETE policy,
+ * so images can never be edited or removed here. */
+export const listingsService = (client: ApiClient) => ({
+  createListing: (storeId: string, body: Record<string, unknown>) =>
+    client.post<ListingDetail>(`/v1/stores/${storeId}/listings`, body),
+  getListing: (id: string) =>
+    client.get<ListingDetail>(`/v1/listings/${id}`),
+  updateListing: (id: string, body: Record<string, unknown>) =>
+    client.patch<ListingDetail>(`/v1/listings/${id}`, body),
+  publish: (id: string) =>
+    client.post<ListingDetail>(`/v1/listings/${id}/publish`, {}),
+  pause: (id: string) =>
+    client.post<ListingDetail>(`/v1/listings/${id}/pause`, {}),
+  resume: (id: string) =>
+    client.post<ListingDetail>(`/v1/listings/${id}/resume`, {}),
+  cancel: (id: string) =>
+    client.post<ListingDetail>(`/v1/listings/${id}/cancel`, {}),
+  getInventory: (id: string) =>
+    client.get<InventoryAvailability>(`/v1/listings/${id}/inventory`),
+  listImages: (id: string) =>
+    client.get<ListingImage[]>(`/v1/listings/${id}/images`),
+  addImage: (
+    id: string,
+    body: { storage_path: string; alt_text?: string | null; display_order?: number },
+  ) => client.post<ListingImage>(`/v1/listings/${id}/images`, body),
+});
+
 export const adminService = (client: ApiClient) => ({
   getDashboard: () => client.get<AdminDashboard>("/v1/admin/dashboard"),
   listMerchants: (params: { status?: string; verification_status?: string; search?: string; page?: number; page_size?: number } = {}) =>
@@ -211,6 +322,7 @@ export function createServices(client: ApiClient) {
     pickup: pickupService(client),
     reviews: reviewsService(client),
     merchants: merchantsService(client),
+    listings: listingsService(client),
     merchantDashboard: merchantDashboardService(client),
     admin: adminService(client),
     notifications: notificationsService(client),
