@@ -8,7 +8,7 @@
  * here: the backend remains the authority.
  */
 
-import type { ApiClient } from "./client";
+import type { ApiClient, RequestOptions } from "./client";
 import type {
   AdminDashboard,
   CheckoutResponse,
@@ -23,6 +23,7 @@ import type {
   OrderDetail,
   OrderSummary,
   Page,
+  PublicReview,
   ReservationResponse,
   ReviewResponse,
   StoreRatingSummary,
@@ -45,23 +46,29 @@ export const authService = (client: ApiClient) => ({
   me: () => client.get<CurrentUser>("/v1/me"),
 });
 
-/** Public marketplace (M5). */
+/** Public marketplace (M5). Guest/anonymous: no session
+ * required. Filters are the exact backend parameters:
+ * single category_id only (the API does not support
+ * multi-category), exact city match on the store, and
+ * pincode validated by the backend pattern. No distance
+ * sorting exists and none is offered. */
 export const marketplaceService = (client: ApiClient) => ({
   listListings: (params: {
     city?: string;
     pincode?: string;
     category_id?: string;
-    listing_type?: string;
+    listing_type?: "surprise_bag" | "individual_item";
     search?: string;
     min_price?: number;
     max_price?: number;
-    dietary?: string;
-    sort?: string;
+    dietary?: "vegetarian" | "non_vegetarian" | "vegan" | "egg" | "unknown";
+    sort?: "newest" | "lowest_price" | "highest_price" | "ending_soon";
     page?: number;
     page_size?: number;
-  } = {}) =>
+  } = {}, options?: RequestOptions) =>
     client.get<Page<MarketplaceListing>>(
       `/v1/marketplace/listings${query(params)}`,
+      options,
     ),
   getListing: (id: string) =>
     client.get<MarketplaceListing>(`/v1/marketplace/listings/${id}`),
@@ -116,8 +123,8 @@ export const reviewsService = (client: ApiClient) => ({
     client.post<ReviewResponse>(`/v1/orders/${orderId}/review`, body),
   listMyReviews: (params: { rating?: number; moderation_status?: string; page?: number; page_size?: number } = {}) =>
     client.get<Page<ReviewResponse>>(`/v1/my/reviews${query(params)}`),
-  listStoreReviews: (storeId: string, params: { sort?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<ReviewResponse>>(`/v1/stores/${storeId}/reviews${query(params)}`),
+  listStoreReviews: (storeId: string, params: { sort?: "newest" | "highest" | "lowest"; rating?: number; page?: number; page_size?: number } = {}) =>
+    client.get<Page<PublicReview> & { store_name: string }>(`/v1/stores/${storeId}/reviews${query(params)}`),
   getStoreRatingSummary: (storeId: string) =>
     client.get<StoreRatingSummary>(`/v1/stores/${storeId}/rating-summary`),
 });

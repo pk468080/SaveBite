@@ -10,6 +10,7 @@ import { EmptyState, ErrorState } from "@/components/ui/states";
 // Next.js navigation is mocked: pathname is /customer/orders.
 vi.mock("next/navigation", () => ({
   usePathname: () => "/customer/orders",
+  useRouter: () => ({ push: () => {}, refresh: () => {} }),
 }));
 
 vi.mock("next/link", () => ({
@@ -21,14 +22,22 @@ vi.mock("next/link", () => ({
 }));
 
 describe("public layout", () => {
-  it("renders brand, marketplace link, and sign-in entry", () => {
-    render(<SiteHeader />);
+  it("renders brand, marketplace link, and sign-in entry for guests", () => {
+    render(<SiteHeader authenticated={false} />);
     expect(screen.getByLabelText("SaveBite home")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Marketplace" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Explore Food" })).toHaveAttribute(
       "href",
       "/marketplace",
     );
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/sign-in");
+    expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute("href", "/sign-in");
+  });
+
+  it("shows an account entry point when authenticated", () => {
+    render(<SiteHeader authenticated={true} />);
+    expect(screen.getByRole("link", { name: "My account" })).toHaveAttribute(
+      "href",
+      "/customer",
+    );
   });
 });
 

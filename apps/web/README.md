@@ -92,7 +92,9 @@ admin, notifications) whose routes are the verified
 backend routes from milestones M2–M12. It contains
 no business rules: the backend remains the authority.
 
-## Route map (W1 — shells and placeholders)
+## Route map
+
+W1 shells and placeholders:
 
 Public: `/` (homepage), `/marketplace` (placeholder),
 `/sign-in`, `/sign-up`, `/unauthorized`.
@@ -106,10 +108,145 @@ Admin shell: `/admin`, `/admin/merchants`,
 `/admin/reviews`, `/admin/activity`.
 Global: `not-found`, `global-error`, `loading`.
 
-Detailed screens (marketplace UI, checkout, listing
-editor, QR scanner, live dashboards) belong to later
-milestones; W1 pages state which backend endpoint
-will feed them.
+W2 public marketplace (real, guest-accessible):
+
+- `/` — homepage: hero with city/pincode entry (plain
+  GET form, so the location lands in a shareable URL),
+  three-step How It Works, categories from the real
+  category endpoint, "Ending soon" and "Newly listed"
+  sections (labelled by their real backend sort, never
+  "featured" or "popular"), sustainability/trust
+  section with no invented statistics, footer without
+  fabricated contact or legal links.
+- `/marketplace` — discovery page: URL-synced search
+  (debounced), city, pincode, single category, listing
+  type, dietary, price range, sort, pagination. The URL
+  query string is the single source of filter truth
+  (back/forward work, filters reset pagination, stale
+  responses cannot overwrite newer results). Desktop
+  sidebar + mobile filter drawer share one FilterPanel
+  component with distinct input ids per instance.
+- `/marketplace/[listingId]` — public detail page:
+  images, price + reference value with discount only
+  when reference exceeds selling, availability, sale
+  and pickup windows, allergens, storage, public store
+  summary, store rating summary, and public visible
+  reviews (no reviewer names exist in the API contract
+  and none are invented). Ineligible/missing listings
+  render a designed unavailable state. No reservation
+  or payment is started here — that is W3.
+
+Detailed screens (checkout, listing editor, QR
+scanner, live dashboards) belong to later milestones.
+
+## Public marketplace: API contract (verified, W2)
+
+Endpoints (all anonymous, no Supabase session):
+
+- `GET /v1/marketplace/listings` — params: `city`
+  (exact store-city match, case-insensitive),
+  `pincode` (pattern `^[1-9][0-9]{5}$`), `category_id`
+  (single UUID only — the API does not support
+  multi-category), `listing_type`
+  (`surprise_bag` | `individual_item`), `search`
+  (title/description/contents substring), `min_price`
+  / `max_price` (non-negative, min ≤ max),
+  `dietary` (`vegetarian` | `non_vegetarian` |
+  `vegan` | `egg` | `unknown`), `sort` (`newest` |
+  `lowest_price` | `highest_price` | `ending_soon`),
+  `page`, `page_size` (default 20, max 100).
+  Response: `{items, total, page, page_size}`.
+- `GET /v1/marketplace/listings/{id}` — 404 for any
+  listing that is not currently eligible; existence
+  of ineligible listings is not leaked.
+- `GET /v1/marketplace/categories` — active
+  categories only, ordered by display_order then name.
+- `GET /v1/stores/{id}/rating-summary` — visible
+  reviews only; `average_rating` is null (never a
+  fabricated 5.0) when there are no public reviews.
+- `GET /v1/stores/{id}/reviews` — visible only,
+  sorts `newest` | `highest` | `lowest`, optional
+  `rating` filter. Fetched ONLY on the detail page,
+  never per listing card.
+
+Listing images: the API returns a STORAGE PATH in
+the public `listing-media` bucket, never a URL. The
+frontend resolves it as
+`{SUPABASE_URL}/storage/v1/object/public/listing-media/{path}`
+(`lib/marketplace.ts`), and Next.js `remotePatterns`
+in `next.config.ts` allow exactly that host and path
+prefix. Listings without images show a placeholder
+visual, never fake photography.
+
+Location behavior: visitors type a city or pincode;
+nothing is assumed, no geolocation, no IP inference,
+no distance sorting (the backend does not offer it).
+The chosen location is reflected in the URL.
+
+## SEO
+
+- Homepage: unique title/description, Open Graph,
+  canonical `/`.
+- Marketplace: static title/description, canonical
+  `/marketplace` (bare URL, so arbitrary filter
+  combinations do not create duplicate indexable
+  URLs).
+- Listing detail: dynamic metadata from the real API
+  response (title, description, main image, canonical
+  `/marketplace/{id}`, Open Graph). Structured data
+  is deliberately NOT emitted yet: the API does not
+  supply every field a Product/Offer schema would
+  require, and no value is invented to fill it.
+- `app/robots.ts`: public routes allowed; customer,
+  merchant, admin, auth, and API routes disallowed.
+- `app/sitemap.ts`: static public routes plus real
+  listing URLs from the marketplace API (paginated,
+  capped at 500, hourly revalidation, static-only
+  fallback if the backend is unreachable).
+
+## Testing
+
+- `apps/web/tests/`: marketplace helpers (pincode,
+  price validation, discount math, labels, INR
+  formatting, filter URL round-trip and rejection of
+  unknown values), ListingCard (real values, computed
+  discount, image fallback, no purchase action),
+  layouts, config.
+- `apps/web/e2e/`: Playwright specs against
+  `e2e/stub-api.mjs` (fixed fixture responses in the
+  real API shapes, port 8000) plus the Next dev
+  server. The stub exists only so e2e can run
+  without a live Supabase project; it is NOT a
+  backend replacement, and e2e passing does not claim
+  a live-backend test. Run:
+  `npx playwright install chromium` once, then
+  `npx playwright test` in `apps/web` (requires
+  `apps/web/.env.local` from `.env.example`).
+
+## Known limitations (W2)
+
+- No dedicated public store page: the backend has no
+  public store-detail endpoint, so store information
+  lives on the listing detail page. Proposed later
+  backend task: a public store endpoint if a full
+  store profile page is wanted.
+- No multi-category filter, no distance sorting, no
+  geolocation: none are supported by the backend.
+- No structured data on listing pages (see SEO).
+- The W1 `lib/api/client.ts` combined module was
+  split into `lib/api/browser.ts` (client) and
+  `lib/api/server.ts` (server): importing the server
+  Supabase client from a client component failed the
+  production build. The old path remains as
+  re-exports for server imports only.
+- Two latent W1 bugs fixed in W2: (1) `lib/config.ts`
+  used dynamic `process.env[name]` indexing, which
+  Next.js does not inline into browser bundles, so
+  every browser config read threw; values are now
+  read with static property access at module load.
+  (2) The shared ApiClient stored bare `fetch`, which
+  loses its Window binding in browsers ("Illegal
+  invocation"); it now uses `fetch.bind(globalThis)`.
 
 ## Design system
 
