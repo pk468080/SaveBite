@@ -960,6 +960,76 @@ class PickupVerifyResponse(BaseModel):
     items: list[OrderItemPreview] = []
 
 
+class ReviewCreateRequest(BaseModel):
+    # Rating is an integer 1-5 (the database CHECK enforces
+    # the same range; Pydantic rejects non-integers and
+    # out-of-range values before any database call).
+    rating: int = Field(ge=1, le=5)
+    # Optional written feedback, max 1000 chars.
+    # Whitespace-only text is stored as no comment.
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class ReviewResponse(BaseModel):
+    """A customer's own review. customer_id is never
+    returned — the caller is the owner by construction."""
+
+    id: UUID
+    order_number: str
+    store_name: str
+    rating: int
+    comment: str | None = None
+    moderation_status: str
+    created_at: datetime
+
+
+class ReviewListResponse(BaseModel):
+    items: list[ReviewResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class PublicReviewResponse(BaseModel):
+    """Public review: rating, text, date only. No customer
+    id, name, email, phone, address, order id, payment
+    data, or moderation notes. There is no customer
+    display label: profiles are own-only by RLS, so no
+    public customer name exists in the database contract
+    to show, and none is invented."""
+
+    id: UUID
+    rating: int
+    comment: str | None = None
+    created_at: datetime
+
+
+class PublicReviewListResponse(BaseModel):
+    items: list[PublicReviewResponse]
+    total: int
+    page: int
+    page_size: int
+    store_name: str
+
+
+class StoreRatingSummary(BaseModel):
+    """Aggregates over PUBLIC (visible) reviews only, so
+    the summary and the public list always agree. Average
+    is rounded half-up to 2 decimal places; a store with
+    no public reviews has average None, never a
+    fabricated 5.0."""
+
+    store_id: UUID
+    store_name: str
+    average_rating: float | None = None
+    total_reviews: int
+    five_star: int
+    four_star: int
+    three_star: int
+    two_star: int
+    one_star: int
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     service: str

@@ -1128,6 +1128,153 @@ schema/RLS/grant/RPC change. No database change is
 proposed: the existing RPCs already implement the full
 required workflow.
 
+## Milestone 9: Customer reviews, ratings and feedback
+
+### Audit findings (verified from the baseline, not assumed)
+
+A review system ALREADY exists in the database — no
+new table was needed, and none was created:
+
+- `public.reviews`: id, order_id (FK orders ON DELETE
+  RESTRICT), customer_id (FK auth.users), store_id (FK
+  stores), merchant_id (FK merchants), rating smallint
+  CHECK 1-5, comment text nullable, moderation_status
+  text CHECK ('visible','hidden','under_review')
+  DEFAULT 'visible', created_at, updated_at
+  (set_updated_at trigger). UNIQUE(order_id) — one
+  review per order, enforced by the database including
+  under concurrent submissions.
+- Reviews are per STORE and per ORDER. There is no
+  listing_id, no rating dimensions, no merchant-response
+  column, no report table, and no aggregate view or
+  function. None is invented here.
+- RLS, the only policies on the table:
+  - INSERT to authenticated WITH CHECK: customer_id =
+    auth.uid() AND an order exists with id = order_id,
+    customer_id = auth.uid(), store_id = reviews.store_id,
+    merchant_id = reviews.merchant_id, status =
+    'collected'. Eligibility is a database rule:
+    pending_payment, confirmed, ready_for_pickup,
+    expired, cancelled, and refund_pending orders can
+    never produce a review, and neither can another
+    customer's order. A captured payment alone is not
+    enough — collection is required.
+  - SELECT to anon + authenticated USING:
+    moderation_status = 'visible' OR customer_id =
+    auth.uid(). Public readers see visible reviews
+    only; a customer also sees their own
+    hidden/under_review reviews in their own history.
+  - NO UPDATE and NO DELETE policy: reviews are
+    immutable after submission through this API. There
+    is no edit, delete, or moderation endpoint in this
+    milestone — moderation_status can only change
+    outside the API, and any moderation workflow would
+    need its own policy/RPC and approval.
+- Column grants for reviews are NOT reproduced in the
+  consolidated baseline, so the insert path's grant
+  surface is unverified from the baseline alone and must
+  be confirmed against live before production use. The
+  RLS policies above are verified; grants are the one
+  open verification item, documented, not assumed.
+
+### Endpoints (user-context client for writes and own
+### reads; anonymous read-only client for public reads)
+
+- `POST /v1/orders/{order_id}/review` — authenticated
+  customer submits one review for their own collected
+  order. Request: rating (integer 1-5) and optional
+  comment (max 1000 chars; whitespace-only becomes no
+  comment). Store and merchant ids come from the order
+  row, customer id from Auth — the request carries no
+  identity or store. The API pre-checks ownership
+  (404) and collected status (422), but the RLS INSERT
+  check remains the final authority: if the status
+  changes between pre-check and insert, the insert
+  fails and the API reports ineligibility. Duplicate
+  submissions return 409 (UNIQUE order_id); a racing
+  duplicate cannot create two reviews. Response:
+  review id, order number, store name, rating, comment,
+  moderation_status, created_at. No customer_id.
+- `GET /v1/my/reviews` — the caller's own reviews,
+  newest first (created_at desc, id desc), paginated
+  (max 100), optional rating and moderation_status
+  filters. Own hidden/under_review reviews appear here
+  (policy allows them to the owner); another customer's
+  reviews never appear.
+- `GET /v1/stores/{store_id}/reviews` — public,
+  anonymous-readable, visible reviews only (the SELECT
+  policy enforces this for anon readers, and the filter
+  is applied explicitly too). Sorts: newest, highest,
+  lowest; optional rating filter; paginated. Each
+  review shows id, rating, comment, created_at only —
+  no customer id, name, email, phone, address, order
+  id, payment data, or moderation notes. There is no
+  customer display label: profiles are own-only by RLS,
+  so no public customer name exists in the database
+  contract to show, and none is invented. A store with
+  no reviews returns an empty list, never fabricated
+  reviews.
+- `GET /v1/stores/{store_id}/rating-summary` —
+  average rating, total visible review count, and
+  5/4/3/2/1-star counts, computed over the SAME visible
+  set as the public list, so the two always agree.
+  Average is the mean, rounded half-up to 2 decimal
+  places; a store with no public reviews returns
+  average null and all counts zero, never a fabricated
+  5.0. Performance note, documented honestly: there is
+  no database aggregate, so the summary fetches ONLY
+  the rating column for one store and aggregates in
+  Python. That is a pilot-scale approach; at large
+  scale it must be replaced by a database view (see
+  "Proposed database change" below). No full review
+  rows are fetched for the summary.
+
+### Visibility and moderation behavior
+
+Default moderation_status is 'visible', so a submitted
+review is publicly visible immediately. 'hidden' and
+'under_review' reviews are excluded from public lists
+and from the summary, but remain visible to their owner
+in their own history. There is no moderation workflow,
+merchant reply, report flow, or edit/delete in this
+milestone, because the database provides no policy or
+RPC for them — adding one would be a schema/policy
+change requiring its own approval.
+
+### Marketplace integration
+
+Deliberately NOT changed: adding a store rating to
+every marketplace listing would need the same aggregate
+source plus a batched lookup, and inventing one here
+would risk N+1 queries. The rating-summary endpoint is
+the integration point until the proposed view exists;
+existing marketplace filtering and responses are
+unchanged.
+
+### Proposed database change (NOT applied, needs
+### separate approval)
+
+A read-only view or function for store rating
+aggregates, e.g. a view over public.reviews restricted
+to moderation_status = 'visible', exposing store_id,
+average_rating (numeric, 2dp), total_reviews, and the
+five star counts, with SELECT granted to anon and
+authenticated. Purpose: replace the Python aggregation
+in the rating summary at large scale and enable safe
+marketplace integration without N+1 queries. It changes
+no write path, no RLS, and no existing table. Until it
+is approved and applied, the summary's Python
+aggregation over the rating column is the documented
+behavior.
+
+### Explicitly NOT in this milestone
+
+Merchant replies, review reporting, admin moderation
+dashboard, sentiment analysis, AI moderation, photo/
+video uploads, loyalty points, discounts or incentives
+for reviews, fake/test production reviews, refunds,
+payouts, and any live schema/RLS/grant/RPC change.
+
 ## Remaining blockers (not hidden)
 
 1. No Supabase access token or DB password is available in this

@@ -128,6 +128,63 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 9 routes: reviews and ratings
+
+Reviews already exist in the database (public.reviews,
+one per order, rating 1-5, moderation visible/hidden/
+under_review) — no new table was created. Eligibility
+is a database rule: only the owning customer, only a
+collected order, store and merchant taken from the
+order, never from the request. Reviews are immutable
+after submission (no UPDATE or DELETE policy exists),
+and there is no edit, delete, or moderation endpoint
+in this milestone.
+
+- `POST /v1/orders/{order_id}/review` — authenticated
+  customer submits one review for their own collected
+  order. Body: `{"rating": 5, "comment": "optional, max 1000 chars"}`.
+  Uncollected orders (pending_payment, confirmed,
+  ready_for_pickup, expired, cancelled, refund_pending)
+  are rejected, as are another customer's orders (404)
+  and duplicates (409). Example response:
+  ```json
+  {
+    "id": "a0000000-0000-4000-8000-000000000099",
+    "order_number": "SF-20261031-000001",
+    "store_name": "Sharma Foods Dwarka",
+    "rating": 5,
+    "comment": "Great bag, fresh items",
+    "moderation_status": "visible",
+    "created_at": "2026-10-31T20:00:00Z"
+  }
+  ```
+- `GET /v1/my/reviews` — the caller's own reviews,
+  newest first, paginated (max 100), optional rating
+  and moderation_status filters. Own hidden/
+  under_review reviews appear here; no customer_id is
+  returned.
+- `GET /v1/stores/{store_id}/reviews` — public,
+  anonymous-readable, visible reviews only. Sorts:
+  newest, highest, lowest; optional rating filter;
+  paginated. Each review shows id, rating, comment,
+  created_at only — no customer data of any kind, and
+  no fabricated display name (profiles are own-only,
+  so no public customer name exists to show).
+- `GET /v1/stores/{store_id}/rating-summary` —
+  average rating (mean, rounded half-up to 2dp),
+  total visible review count, and 5/4/3/2/1-star
+  counts, over the same visible set as the public
+  list. A store with no public reviews returns
+  average null and all counts zero, never a fabricated
+  5.0. Note: there is no database aggregate yet, so
+  the summary fetches only the rating column for one
+  store and aggregates in Python (pilot-scale; a
+  database view is proposed in architecture.md, not
+  applied). Marketplace responses are unchanged.
+
+See `../docs/architecture.md` for the full review
+audit, visibility rules, and the proposed view.
+
 ## Milestone 8 routes: secure pickup verification
 
 The database is authoritative for every collection.
