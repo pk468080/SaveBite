@@ -31,6 +31,7 @@ import type {
   OrderSummary,
   Page,
   PickupDashboard,
+  PickupTokenResponse,
   PickupVerifyResponse,
   PublicReview,
   ReservationResponse,
@@ -155,7 +156,7 @@ export const paymentsService = (client: ApiClient) => ({
 /** Pickup verification (M8). */
 export const pickupService = (client: ApiClient) => ({
   issuePickupToken: (orderId: string) =>
-    client.post<{ pickup_token: string; qr_payload: string }>(
+    client.post<PickupTokenResponse>(
       `/v1/orders/${orderId}/pickup-token`,
       {},
     ),

@@ -133,6 +133,9 @@ const SESSION = {
   user: USER,
 };
 const orders = new Map();
+const pickupTokens = new Map();
+let pickupTokenSeq = 1;
+const LEGACY_PICKUP_TOKEN = "d".repeat(64);
 const merchantListings = new Map();
 const merchantImages = new Map();
 let orderSeq = 1;
@@ -701,10 +704,61 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify(orderDetail(order)));
     return;
   }
+  const pickupTokenMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)\/pickup-token$/);
+  if (req.method === "POST" && pickupTokenMatch) {
+    const order = orders.get(pickupTokenMatch[1]);
+    const eligible =
+      order &&
+      (order.status === "confirmed" || order.status === "ready_for_pickup") &&
+      order.payment_status === "captured";
+    if (!eligible) {
+      res.writeHead(422);
+      res.end(JSON.stringify({ error: { code: "VALIDATION_ERROR", message: "Order is not eligible for pickup", request_id: "e2e" } }));
+      return;
+    }
+    // Deterministic per-issuance token (unique across
+    // parallel workers): the real backend mints 32
+    // random bytes; the stub mints a counter-based
+    // 64-hex value so verify can resolve the exact
+    // order. A fresh issuance invalidates the old one.
+    for (const [oldToken, entry] of pickupTokens.entries()) {
+      if (entry.orderId === order.id) pickupTokens.delete(oldToken);
+    }
+    const token = pickupTokenSeq.toString(16).padStart(64, "0");
+    pickupTokenSeq += 1;
+    pickupTokens.set(token, { orderId: order.id, used: false });
+    res.end(JSON.stringify({
+      order_id: order.id,
+      order_number: order.order_number,
+      pickup_token: token,
+      qr_payload: `SB1:${token}`,
+      expires_at: "2026-10-31T21:30:00+00:00",
+      pickup_starts_at: "2026-10-31T18:00:00+00:00",
+      pickup_ends_at: "2026-10-31T21:00:00+00:00",
+      store_name: "Sharma Foods",
+      pickup_instructions: "Ask at the counter.",
+    }));
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/v1/merchant/pickups/verify") {
     const body = await readBody(req);
     const token = String(body.pickup_token ?? "");
-    if (body.store_id === STORE_ID && token === "validtoken123456") {
+    const issued = pickupTokens.get(token);
+    if (issued && !issued.used && body.store_id === STORE_ID) {
+      issued.used = true;
+      const order = orders.get(issued.orderId);
+      if (order) order.status = "collected";
+      res.end(JSON.stringify({
+        order_id: order?.id ?? "99999999-9999-4999-8999-999999999991",
+        order_number: order?.order_number ?? "SB-E2E-1",
+        store_name: "Sharma Foods",
+        status: "collected",
+        collected_at: "2026-10-31T18:30:00+00:00",
+        items: [{ title: "Evening Bakery Bag", quantity: 1 }],
+      }));
+      return;
+    }
+    if (body.store_id === STORE_ID && token === LEGACY_PICKUP_TOKEN) {
       const order = [...orders.values()].find((o) => o.status === "confirmed") ?? [...orders.values()].at(-1);
       if (order) order.status = "collected";
       res.end(JSON.stringify({

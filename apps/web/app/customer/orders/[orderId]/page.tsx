@@ -1,6 +1,7 @@
 import { ApiError, createServices } from "@savebite/api-client";
 import Image from "next/image";
 import Link from "next/link";
+import { PickupQrSection } from "@/components/customer/pickup-qr-section";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, EmptyState } from "@/components/ui/states";
@@ -168,9 +169,19 @@ export default async function OrderDetailPage({
             <p className="text-muted-foreground">Instructions: {store.pickup_instructions}</p>
           ) : null}
           <p className="text-muted-foreground">
-            Collect your food at the store — there is no delivery. The pickup code screen arrives
-            in a later milestone; nothing on this page is a pickup code.
+            Collect your food at the store — there is no delivery.
           </p>
+          <PickupQrSection
+            orderId={order.id}
+            orderNumber={order.order_number}
+            orderStatus={order.status}
+            paymentStatus={order.payment.status}
+            storeName={store.name}
+            storeAddress={address}
+            pickupStartsAt={order.pickup_starts_at}
+            pickupEndsAt={order.pickup_ends_at}
+            pickupInstructions={store.pickup_instructions}
+          />
           {order.reservation_expires_at && order.status === "pending_payment" ? (
             <p className="text-muted-foreground">
               Reservation expires {formatDateTime(order.reservation_expires_at)}.

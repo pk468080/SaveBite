@@ -107,7 +107,12 @@ describe("pickup token handling", () => {
   it("strips the SB1: prefix and validates tokens", () => {
     expect(normalisePickupToken("SB1:abcdef123456")).toBe("abcdef123456");
     expect(normalisePickupToken("  abcdef123456  ")).toBe("abcdef123456");
-    expect(isValidPickupToken("abcdef123456")).toBe(true);
+    expect(normalisePickupToken("SB1:ABCDEF")).toBe("abcdef");
+    // W5: issued tokens are exactly 64 hex chars
+    // (M8); anything shorter or non-hex is refused
+    // locally, matching the backend route check.
+    expect(isValidPickupToken("b".repeat(64))).toBe(true);
+    expect(isValidPickupToken("abcdef123456")).toBe(false);
     expect(isValidPickupToken("short")).toBe(false);
     expect(isValidPickupToken("bad token!")).toBe(false);
   });

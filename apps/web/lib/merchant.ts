@@ -230,10 +230,18 @@ export function allergenCodesFromInput(input: string): string[] {
  * Tokens are never logged or stored.
  */
 export function normalisePickupToken(input: string): string {
-  const trimmed = input.trim();
-  return trimmed.startsWith("SB1:") ? trimmed.slice(4) : trimmed;
+  // Mirror the backend strip: trim, drop the
+  // SB1: prefix when present, lowercase (issued
+  // tokens are lowercase hex).
+  const lowered = input.trim().toLowerCase();
+  return lowered.startsWith("sb1:") ? lowered.slice(4) : lowered;
 }
 
 export function isValidPickupToken(token: string): boolean {
-  return /^[A-Za-z0-9]+$/.test(token) && token.length >= 8;
+  // Issued tokens are always 64 lowercase hex
+  // chars (M8). Anything else is rejected by the
+  // backend route before any RPC call, so the
+  // portal says so locally instead of sending a
+  // request that cannot succeed.
+  return /^[0-9a-f]{64}$/.test(token);
 }

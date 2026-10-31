@@ -93,10 +93,13 @@ test("mocked merchant journey: dashboard, draft, publish, inventory, orders, pic
   await expect(page.getByRole("heading", { name: "Verify a pickup" })).toBeVisible({
     timeout: 60000,
   });
-  await page.getByPlaceholder(/SB1:/).fill("SB1:badtoken123456");
+  // W5: a well-formed but unissued token reaches
+  // the backend and is refused there; the legacy
+  // W4 token is the stub's known-good token.
+  await page.getByPlaceholder(/SB1:/).fill(`SB1:${"c".repeat(64)}`);
   await page.getByRole("button", { name: "Verify pickup" }).click();
   await expect(page.getByText(/invalid, expired, or already used/)).toBeVisible();
-  await page.getByPlaceholder(/SB1:/).fill("SB1:validtoken123456");
+  await page.getByPlaceholder(/SB1:/).fill(`SB1:${"d".repeat(64)}`);
   await page.getByRole("button", { name: "Verify pickup" }).click();
   await expect(page.getByText("Pickup confirmed")).toBeVisible();
 

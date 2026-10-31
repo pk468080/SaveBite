@@ -355,6 +355,80 @@ state in localStorage (`savebite_merchant_store_v1`)
 is validated against the loaded memberships on
 every load and never treated as proof of access.
 
+## Customer pickup QR and merchant collection (W5, M8)
+
+- `/customer/orders/[orderId]` — the Pickup card
+  now carries a pickup QR section. The customer
+  must deliberately click "Show Pickup QR"; the
+  page never issues a token on load. The button
+  appears only when the order is confirmed or
+  ready_for_pickup and its payment is captured
+  (a display gate only — the backend re-checks
+  status, payment, window and ownership on every
+  issuance). Ineligible orders show a plain
+  reason instead (pay first, already collected,
+  no longer eligible, not ready yet).
+- Issuance uses `POST /v1/orders/{id}/pickup-token`
+  and renders the backend-returned `qr_payload`
+  (`SB1:<64-hex-token>`) with `qrcode.react`
+  (QRCodeSVG, high-contrast black on white, large
+  mobile-first size). The token lives in component
+  memory only: never localStorage, sessionStorage,
+  cookies, URLs or logs, never shown as visible
+  text, and cleared when the code is hidden, the
+  order changes, or the view unmounts. The screen
+  shows order number, store, pickup window,
+  expiry (pickup end + 30 minutes, per the
+  backend), instructions, a do-not-share reminder,
+  and an accessible label plus screen-reader text.
+  "Request a fresh code" warns first that the
+  current unused code will stop working; if a
+  fresh-code request fails, the old code is also
+  cleared rather than left on screen as if valid,
+  because it may already have been invalidated
+  server-side. Failed first requests show the
+  backend message and keep the button for a
+  deliberate retry — issuance is never retried
+  automatically, since every issuance invalidates
+  the previous unused token.
+- `/merchant/pickups` (W5 improvements on the W4
+  page): a scanned value must now be exactly a
+  SaveBite QR payload (`SB1:` + 64 hex chars) or
+  it is rejected before any backend call — a
+  decode is never a collection. Manual entry
+  validates the same 64-hex token format locally
+  (the backend route rejects anything else before
+  its RPC). A failed scan keeps scanning instead
+  of going silent; a successful scan stops the
+  camera. The success box links to the collected
+  order, and order pages refetch on navigation so
+  the collected status shows on both sides. The
+  backend still owns every check (token, store
+  authorization, payment, window — verification
+  runs from pickup start − 15 minutes to pickup
+  end + 30 minutes — and one-time atomic
+  collection), and its collapsed failure messages
+  ("invalid, expired, or already used",
+  "cannot be collected", "outside the pickup
+  window") are shown as-is. Verify roles are the
+  backend's: owner/admin plus store_manager and
+  pickup_operator; finance_viewer and
+  inventory_manager cannot verify.
+- Order status synchronization needs no polling
+  or realtime: customer detail and history pages
+  are server-rendered and refetch on every
+  navigation, and merchant pages fetch on mount,
+  so a backend-confirmed collection shows as
+  collected everywhere on the next visit. Nothing
+  is ever marked collected optimistically.
+- Security invariants: no token is generated in
+  JavaScript, no token is persisted, logged, or
+  sent anywhere except the two backend endpoints,
+  and no service-role key or payment secret is in
+  client bundles. No migration, RLS change,
+  backend change, or live Supabase change was
+  made in W5.
+
 ## Known limitations (W4)
 
 - No merchant-facing document-upload endpoint
@@ -594,7 +668,30 @@ from retries.
   analytics, reviews) plus unauthorized-store
   not-found and a backend-refused transition
   after cancel. Image upload is excluded (see
-  Known limitations, W4).
+  Known limitations, W4). W5 updates the spec's
+  tokens to the real 64-hex format (valid stub
+  token, well-formed unissued token).
+- `apps/web/tests/pickup.test.ts` + `tests/pickup-qr-section.test.tsx`: W5 QR payload
+  build/parse (SB1: + 64 hex only), eligibility
+  gate and reasons, and the QR section component
+  (request-on-click only, QR renders, raw token
+  never visible as text, duplicate clicks send
+  one request, ineligible orders show no button,
+  failed issuance shows an error with deliberate
+  retry, hide clears the code, fresh-code
+  invalidation note, order change clears the
+  token).
+- `apps/web/e2e/pickup.spec.ts`: W5 mocked
+  customer-to-merchant journey (eligible order,
+  QR request + display, no token in browser
+  storage, hide + fresh code, merchant manual
+  verification of the fresh code, collected
+  status on customer refetch, already-used
+  rejection) plus invalid-token refusal and
+  ineligible-order gating. The spec learns the
+  mocked token from the stub issuance response
+  (the way a merchant learns it by scanning);
+  no real camera hardware is used.
 - `apps/web/e2e/`: Playwright specs against
   `e2e/stub-api.mjs` (fixed fixture responses in the
   real API shapes, port 8000) plus the Next dev
