@@ -128,6 +128,70 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 10 routes: merchant dashboard and analytics
+
+Read-only reporting. Every number comes from actual
+database records; no dashboard route mutates an order,
+listing, payment, or review. Authorization mirrors M7
+order reads: merchant owner/admin (all stores of that
+merchant) or store staff with role store_manager,
+pickup_operator, or finance_viewer; inventory_manager
+is not in the orders RLS set and is not granted
+dashboard access. A requested store_id can only narrow
+the authorized set; an unauthorized store returns 404.
+
+- `GET /v1/merchant/dashboard` — overview for one
+  store (`store_id`) or all authorized stores, optional
+  half-open period `from`/`to`. Returns store context,
+  order metrics, inventory metrics, pickup metrics,
+  and rating metrics. `open_now` is null: the
+  store_hours weekday convention (0 = Monday or
+  Sunday) is unverified in the repository, so operating
+  status cannot be determined reliably and is not
+  guessed.
+- `GET /v1/merchant/dashboard/sales` — `store_id`,
+  `from`, `to`, `group_by` (day/week/month). Buckets
+  carry total, captured, pending-payment, failed-
+  payment, collected, and cancelled-or-expired order
+  counts plus captured order value, with a totals
+  bucket. Grouping uses the store's own timezone for a
+  single store, Asia/Kolkata for multiple stores.
+- `GET /v1/merchant/dashboard/inventory` — inventory
+  summary; with `low_stock_threshold`, listings whose
+  generated available_quantity is at or below it (a
+  reporting filter only — it changes nothing).
+- `GET /v1/merchant/dashboard/pickups` — `store_id`,
+  `from`, `to`, `category` (upcoming/in_window/
+  completed/window_expired). Each order shows order
+  number, status, pickup window, category, and total
+  item quantity. Window-expired is never labelled
+  "missed": the database records no no-show event.
+- `GET /v1/merchant/dashboard/stores` — one row per
+  authorized store: name, status, total orders,
+  captured order value, collected orders, active
+  listings, available units, average rating, review
+  count.
+
+Money, precisely: captured order value is the sum of
+total_amount over orders whose payment_status is
+captured, and nothing else — pending, authorized-only,
+failed, refunded, partially_refunded, and
+reconciliation states never count, and a captured order
+is not called collected unless its order status is
+collected. It is NOT merchant earnings, settlement, or
+payout revenue: fees, refunds, and payouts are not
+deducted, because the order row carries no refund
+amounts to net against, so no net revenue is reported.
+All money math is Decimal, serialized as strings
+("390.00"), never floats. "Published" listings means
+status active. Pickup events in private.pickup_events
+are not queried; pickup categories come from order rows
++ current time using the verify RPC's windows
+(in-window = pickup start - 15 min to pickup end + 30
+min). Rating metrics use visible reviews only, the
+same rule as M9. See `../docs/architecture.md` for
+metric definitions, date rules, and limitations.
+
 ## Milestone 9 routes: reviews and ratings
 
 Reviews already exist in the database (public.reviews,
