@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 export interface NavItem {
   href: string;
   label: string;
+  /** Optional count badge (e.g. unread notifications). */
+  badge?: number;
 }
 
 /** Responsive app navigation: horizontal bar on small
@@ -45,6 +47,11 @@ export function AppNav({ title, items }: { title: string; items: NavItem[] }) {
                 )}
               >
                 {item.label}
+                {item.badge && item.badge > 0 ? (
+                  <span className="ml-2 rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+                    {item.badge}
+                  </span>
+                ) : null}
               </Link>
             </li>
           );

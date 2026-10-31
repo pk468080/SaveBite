@@ -2,26 +2,38 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import { useForm } from "react-hook-form";
+import { PasswordField } from "@/components/auth/password-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Alert } from "@/components/ui/states";
+import { Alert, LoadingState } from "@/components/ui/states";
 import { createClient } from "@/lib/supabase/client";
 import { signInSchema, type SignInValues } from "@/lib/validation/auth";
 
 /**
- * Sign-in foundation. Supabase Auth is the only
- * identity provider: email + password go to Supabase,
- * the session lives in cookies, and the FastAPI backend
+ * Sign-in (W3). Supabase Auth is the only identity
+ * provider: email + password go to Supabase, the
+ * session lives in cookies, and the FastAPI backend
  * receives the access token as a Bearer token. No
  * password is stored by SaveBite itself, and no
  * frontend role is ever trusted for access.
+ *
+ * The ?next= destination is honoured only when it is
+ * a same-site path (starts with one "/" and not with
+ * "//"), so an open-redirect cannot be smuggled in.
  */
-export default function SignInPage() {
+function safeNext(raw: string | null): string {
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/customer";
+  return raw;
+}
+
+function SignInForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const next = safeNext(searchParams.get("next"));
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const form = useForm<SignInValues>({
@@ -38,7 +50,7 @@ export default function SignInPage() {
         setError(authError.message);
         return;
       }
-      router.push("/customer");
+      router.push(next);
       router.refresh();
     } catch {
       setError("Could not sign in. Please try again.");
@@ -67,17 +79,18 @@ export default function SignInPage() {
               </p>
             ) : null}
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="password" className="text-sm font-medium">
-              Password
-            </label>
-            <Input id="password" type="password" autoComplete="current-password" {...form.register("password")} />
-            {form.formState.errors.password ? (
-              <p role="alert" className="text-sm text-destructive">
-                {form.formState.errors.password.message}
-              </p>
-            ) : null}
-          </div>
+          <PasswordField
+            id="password"
+            label="Password"
+            autoComplete="current-password"
+            error={form.formState.errors.password?.message}
+            inputProps={form.register("password")}
+          />
+          <p className="text-right text-sm">
+            <Link href="/forgot-password" className="font-medium text-primary underline-offset-4 hover:underline">
+              Forgot password?
+            </Link>
+          </p>
           <Button type="submit" disabled={pending} className="w-full">
             {pending ? "Signing in…" : "Sign in"}
           </Button>
@@ -90,5 +103,13 @@ export default function SignInPage() {
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={<LoadingState label="Loading sign-in…" />}>
+      <SignInForm />
+    </Suspense>
   );
 }

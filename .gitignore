@@ -8,3 +8,5 @@ dist/
 supabase/.temp/
 *.log
 .DS_Store
+
+*.tsbuildinfo

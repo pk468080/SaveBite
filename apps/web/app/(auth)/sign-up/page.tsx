@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Alert } from "@/components/ui/states";
+import { PasswordField } from "@/components/auth/password-field";
 import { createClient } from "@/lib/supabase/client";
 import { signUpSchema, type SignUpValues } from "@/lib/validation/auth";
 
@@ -77,24 +78,20 @@ export default function SignUpPage() {
               <p role="alert" className="text-sm text-destructive">{form.formState.errors.email.message}</p>
             ) : null}
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="password" className="text-sm font-medium">
-              Password
-            </label>
-            <Input id="password" type="password" autoComplete="new-password" {...form.register("password")} />
-            {form.formState.errors.password ? (
-              <p role="alert" className="text-sm text-destructive">{form.formState.errors.password.message}</p>
-            ) : null}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="confirmPassword" className="text-sm font-medium">
-              Confirm password
-            </label>
-            <Input id="confirmPassword" type="password" autoComplete="new-password" {...form.register("confirmPassword")} />
-            {form.formState.errors.confirmPassword ? (
-              <p role="alert" className="text-sm text-destructive">{form.formState.errors.confirmPassword.message}</p>
-            ) : null}
-          </div>
+          <PasswordField
+            id="password"
+            label="Password"
+            autoComplete="new-password"
+            error={form.formState.errors.password?.message}
+            inputProps={form.register("password")}
+          />
+          <PasswordField
+            id="confirmPassword"
+            label="Confirm password"
+            autoComplete="new-password"
+            error={form.formState.errors.confirmPassword?.message}
+            inputProps={form.register("confirmPassword")}
+          />
           <Button type="submit" disabled={pending} className="w-full">
             {pending ? "Creating account…" : "Create account"}
           </Button>

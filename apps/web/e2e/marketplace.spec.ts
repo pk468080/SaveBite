@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("marketplace renders real listings and search updates the URL", async ({ page }) => {
   await page.goto("/marketplace");
   await expect(page.getByText("Evening Bakery Bag")).toBeVisible();
-  await expect(page.getByText(/1 listing/)).toBeVisible();
+  await expect(page.getByText(/2 listings/)).toBeVisible();
 
   // Search is debounced (400 ms) and lands in the URL.
   await page.getByLabel("Search listings").fill("bakery");
