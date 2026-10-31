@@ -128,6 +128,39 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 7 routes: order management
+
+Customer (authenticated, own orders only):
+
+- `GET /v1/orders` — history, filters status,
+  payment_status, created_from, created_to; newest first;
+  page/page_size (max 100). List items: store summary,
+  pickup window, item count, two-item preview.
+- `GET /v1/orders/{order_id}` — full detail: amounts,
+  store address + pickup instructions, pickup window,
+  reservation expiry (pending orders), snapshot items
+  with current public images, payment summary, and the
+  real event timeline. Another customer's order returns
+  the same 404 as a missing one.
+
+Merchant (authenticated, authorized stores only):
+
+- `GET /v1/merchant/orders` — filters store_id (can only
+  narrow the authorized set), status, payment_status,
+  pickup_from, pickup_to, order-number search; paginated.
+  No customer personal information is returned.
+- `GET /v1/merchant/orders/{order_id}` — merchant detail
+  (same shape, including the customer's order note).
+- `GET /v1/merchant/orders/summary` — counts over
+  authorized stores: total, awaiting_payment, paid,
+  upcoming_pickups, completed (collected),
+  cancelled_or_expired.
+
+Status honesty: pending_payment is not paid, captured is
+not collected, confirmed is not ready_for_pickup; the
+timeline contains only recorded order_status_events rows,
+never guessed history. See `../docs/architecture.md`.
+
 ## Milestone 6 routes: Razorpay payments
 
 - `POST /v1/orders/{order_id}/checkout` (authenticated,
