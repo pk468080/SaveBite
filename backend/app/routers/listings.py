@@ -9,21 +9,22 @@ consequences, enforced here rather than assumed:
   has no INSERT grant on status, so status is never sent on
   create and the database default applies.
 - Inventory counters (reserved, sold, available) are never sent:
-  the role has SELECT-only on them. available_quantity in
-  responses is COMPUTED as total - reserved - sold, because the
-  database never maintains the stored column (no trigger, no
-  generated column, and create_order_reservation only increments
-  reserved_quantity). Reservation and order logic stays in the
-  database functions — this router never recreates it, and never
-  writes inventory_events or inventory_reservations.
+  the role has SELECT-only on them. available_quantity is a
+  GENERATED column in the database
+  (total - reserved - sold, recalculated by PostgreSQL), so the
+  response value computed with the same formula matches the
+  stored value exactly. Reservation and order logic stays in
+  the database functions — this router never recreates it, and
+  never writes inventory_events or inventory_reservations.
 - published_at is SELECT-only, so activation cannot stamp it;
-  it stays NULL until a future migration adds a trigger/RPC.
+  it stays NULL pending separate review (see architecture.md).
+  That issue is deliberately kept separate from availability.
 - Status transitions are updates, not deletes: there is no
   DELETE policy on listings, and cancel means status='cancelled'.
 - Images: listing_images has INSERT/SELECT only — no UPDATE or
   DELETE policy — so images can be registered and listed, but
   not edited or removed through this API. Removal is deferred
-  pending a policy (see the proposed migration in architecture.md).
+  pending a policy (see architecture.md).
   Storage objects in listing-media require the path
   <listing_id>/<file> and a store-operator caller; the API
   validates that path shape and never accepts a URL.
@@ -101,7 +102,8 @@ def _listing_from_row(row: dict) -> ListingResponse:
     reserved = row.get("reserved_quantity", 0) or 0
     sold = row.get("sold_quantity", 0) or 0
     data = dict(row)
-    # Computed available, not the stored column (see module docstring).
+    # Same formula as the generated column (see module docstring),
+    # so this matches the stored value exactly.
     data["available_quantity"] = total - reserved - sold
     return ListingResponse(**data)
 
@@ -391,11 +393,9 @@ async def _transition_listing(
         # The database UPDATE policy also requires available > 0
         # and a public store; check the computed figure first so
         # the caller gets a clear 422 instead of a raw upstream
-        # rejection. Note: the stored available_quantity column is
-        # unmaintained, so activation through the DB policy will
-        # still fail until the proposed migration lands — see
-        # architecture.md. That failure surfaces as a 403/422
-        # upstream error, not a silent success.
+        # rejection. The computed figure uses the same formula as
+        # the generated column, so it matches the value the DB
+        # policy evaluates.
         total = listing.get("total_quantity", 0)
         reserved = listing.get("reserved_quantity", 0) or 0
         sold = listing.get("sold_quantity", 0) or 0
@@ -461,7 +461,8 @@ async def get_inventory_availability(
     client: SupabaseRestClient = Depends(get_user_client),
 ) -> InventoryAvailabilityResponse:
     """Read-only inventory view. Counts come from the listing row;
-    available is computed (total - reserved - sold). Active
+    available uses the generated-column formula
+    (total - reserved - sold), matching the stored value. Active
     reservations are read through the reservation function
     authority only in a later milestone — this endpoint never
     creates, edits, or releases reservations, and never writes

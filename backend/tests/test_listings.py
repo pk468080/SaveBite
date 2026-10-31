@@ -3,8 +3,8 @@
 All Supabase access is faked; no test touches live Supabase.
 The fake mirrors the real database contract where it matters:
 - new listings get status draft (no INSERT grant on status),
-- inventory counters start at 0 and available_quantity is None
-  (the database never maintains it — see architecture.md),
+- inventory counters start at 0 and available_quantity is the
+  GENERATED value total - reserved - sold (see architecture.md),
 - insert/update honour eq filters, and forbidden columns in a
   write are rejected, proving the router never sends them.
 """
@@ -73,7 +73,8 @@ def listing_row(**overrides):
         "total_quantity": 10,
         "reserved_quantity": 2,
         "sold_quantity": 1,
-        "available_quantity": None,
+        # Generated: 10 - 2 - 1 = 7.
+        "available_quantity": 7,
         "sale_starts_at": "2026-11-01T09:00:00+00:00",
         "sale_ends_at": "2026-11-01T18:00:00+00:00",
         "pickup_starts_at": "2026-11-01T18:00:00+00:00",
@@ -155,7 +156,8 @@ class ListingFake:
         new_row["status"] = "draft"
         new_row["reserved_quantity"] = 0
         new_row["sold_quantity"] = 0
-        new_row["available_quantity"] = None
+        # Generated column, recalculated by the database.
+        new_row["available_quantity"] = new_row.get("total_quantity", 0)
         new_row["published_at"] = None
         new_row["created_at"] = "2026-10-31T00:00:00Z"
         new_row["updated_at"] = "2026-10-31T00:00:00Z"
@@ -172,6 +174,13 @@ class ListingFake:
         for existing in self.tables.get(table, []):
             if self._matches(existing, filters):
                 existing.update(row)
+                if table == "listings":
+                    # Generated column, recalculated by the database.
+                    existing["available_quantity"] = (
+                        existing.get("total_quantity", 0)
+                        - (existing.get("reserved_quantity", 0) or 0)
+                        - (existing.get("sold_quantity", 0) or 0)
+                    )
                 updated.append(dict(existing))
         return updated
 
@@ -287,7 +296,7 @@ def test_create_listing_success_draft_and_forbidden_columns():
     body = response.json()
     assert body["status"] == "draft"
     assert body["created_by"] == str(USER_ID)
-    # Computed available = total - reserved - sold, not the DB NULL.
+    # Generated-column value: total - reserved - sold = 10.
     assert body["available_quantity"] == 10
     table, row = fake.insert_calls[0]
     assert table == "listings"
@@ -450,7 +459,7 @@ def test_get_listing_and_computed_available():
     client = _client_with(fake)
     response = client.get(f"/v1/listings/{LISTING_ID}")
     assert response.status_code == 200
-    # 10 total - 2 reserved - 1 sold = 7, not the stored NULL.
+    # Generated: 10 total - 2 reserved - 1 sold = 7.
     assert response.json()["available_quantity"] == 7
 
 

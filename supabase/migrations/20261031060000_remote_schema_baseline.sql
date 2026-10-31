@@ -18,6 +18,13 @@
 --   only their versions/names are recorded in supabase/migrations/README.md.
 -- * Table/column grants and storage-bucket policies are summarised in
 --   supabase/migrations/README.md, not reproduced as GRANT statements here.
+-- * Correction 2026-10-31 (tracking only, NOT a new migration): the
+--   original introspection dropped the generated-column expression
+--   for listings.available_quantity. It is restored here from the
+--   verified live definition: GENERATED ALWAYS AS
+--   (total_quantity - reserved_quantity - sold_quantity) STORED.
+--   PostgreSQL 17 recalculates it whenever the underlying
+--   quantities change; it is never written by application code.
 -- * Extension creation is commented out: Supabase-managed extensions
 --   (postgis, pgcrypto, uuid-ossp, etc.) are already present in the project.
 
@@ -356,7 +363,7 @@ create table public."listings" (
   "total_quantity" integer not null,
   "reserved_quantity" integer default 0 not null,
   "sold_quantity" integer default 0 not null,
-  "available_quantity" integer,
+  "available_quantity" integer generated always as (total_quantity - reserved_quantity - sold_quantity) stored,
   "sale_starts_at" timestamp with time zone default now() not null,
   "sale_ends_at" timestamp with time zone not null,
   "pickup_starts_at" timestamp with time zone not null,
