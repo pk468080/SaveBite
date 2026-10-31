@@ -862,6 +862,14 @@ class OrderDetail(BaseModel):
     pickup_starts_at: datetime
     pickup_ends_at: datetime
     reservation_expires_at: datetime | None = None
+    # Pickup availability, derived from the order row (status
+    # confirmed/ready_for_pickup and within pickup_ends + 30
+    # minutes). It is NOT a database field, and it does not
+    # say whether a token was issued — tokens are one-time,
+    # plaintext-only at issuance, and cannot be read back.
+    # A collected, cancelled, or expired order is never
+    # pickup-available.
+    pickup_available: bool = False
     items: list[OrderItemResponse] = []
     timeline: list[OrderTimelineEvent] = []
 
@@ -910,6 +918,46 @@ class MerchantOrderQueueSummary(BaseModel):
     upcoming_pickups: int
     completed: int
     cancelled_or_expired: int
+
+
+class PickupTokenResponse(BaseModel):
+    """One-time pickup token, returned ONLY at issuance.
+    The database stores only the SHA256 hash, so the
+    plaintext token cannot be retrieved later — a lost
+    token means issuing a fresh one (which invalidates the
+    old one). pickup_token_id is deliberately NOT returned:
+    the frontend needs the token, not an internal id."""
+
+    order_id: UUID
+    order_number: str
+    pickup_token: str
+    qr_payload: str
+    expires_at: datetime
+    pickup_starts_at: datetime
+    pickup_ends_at: datetime
+    store_name: str
+    pickup_instructions: str | None = None
+
+
+class PickupVerifyRequest(BaseModel):
+    """store_id is required by the verify RPC's signature and
+    is the store where the customer is standing. It is NOT
+    trusted as authority: the database checks that the
+    caller is authorized for that store AND that the
+    token's order belongs to that store. A wrong store_id
+    fails; it can never grant access to another store."""
+
+    store_id: UUID
+    pickup_token: str = Field(min_length=1, max_length=200)
+
+
+class PickupVerifyResponse(BaseModel):
+    order_id: UUID
+    order_number: str
+    store_name: str
+    status: OrderStatus
+    collected_at: datetime
+    items: list[OrderItemPreview] = []
 
 
 class HealthResponse(BaseModel):

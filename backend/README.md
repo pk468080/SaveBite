@@ -128,6 +128,77 @@ pytest -q                           # full suite
 Milestone 3 and 4 tests use fakes and dependency overrides only;
 they never touch live Supabase and never use a real secret.
 
+## Milestone 8 routes: secure pickup verification
+
+The database is authoritative for every collection.
+Both endpoints use the caller's user-context client and
+the approved RPCs only — no service-role access, no
+private-table queries, no client-side status change.
+
+- `POST /v1/orders/{order_id}/pickup-token` —
+  authenticated customer issues a one-time pickup token
+  for their own eligible order (confirmed or
+  ready_for_pickup, within pickup_ends_at + 30 minutes;
+  unpaid, failed, pending, cancelled, expired, and
+  already-collected orders are rejected by the RPC).
+  Example response:
+  ```json
+  {
+    "order_id": "55555555-5555-4555-8555-555555555555",
+    "order_number": "SF-20261031-000001",
+    "pickup_token": "<64-hex-token, shown once only>",
+    "qr_payload": "SB1:<64-hex-token>",
+    "expires_at": "2026-10-31T21:30:00Z",
+    "pickup_starts_at": "2026-10-31T18:00:00Z",
+    "pickup_ends_at": "2026-10-31T21:00:00Z",
+    "store_name": "Sharma Foods Dwarka",
+    "pickup_instructions": "Collect from counter"
+  }
+  ```
+  The token is stored only as a SHA256 hash, so it
+  cannot be retrieved later; issuing a fresh token
+  invalidates previous unused ones. QR payload format:
+  `SB1:<token>` — version prefix plus opaque token
+  only, no personal, payment, or order data. The
+  frontend renders this string as a QR code.
+- `POST /v1/merchant/pickups/verify` — authenticated
+  merchant verifies a token. Body:
+  `{"store_id": "<uuid>", "pickup_token": "<token or SB1:token>"}`.
+  The store_id is the store where the customer is
+  standing; the database checks the caller's
+  authorization for that store AND that the token's
+  order belongs to it, so it is never trusted as
+  authority. Allowed roles (database-enforced): merchant
+  owner, merchant admin, store_manager,
+  pickup_operator. NOT allowed: finance_viewer,
+  inventory_manager. Example success response:
+  ```json
+  {
+    "order_id": "55555555-5555-4555-8555-555555555555",
+    "order_number": "SF-20261031-000001",
+    "store_name": "Sharma Foods Dwarka",
+    "status": "collected",
+    "collected_at": "2026-10-31T18:30:00Z",
+    "items": [{"title": "Evening Surprise Bag", "quantity": 2}]
+  }
+  ```
+  Failures are privacy-safe and generic: invalid/
+  expired/already-used tokens share one message,
+  unpaid/cancelled/expired/wrong-store orders share
+  another, outside-window is separate, and unauthorized
+  store access is 403. A used token can never be
+  replayed, and concurrent verifications are serialised
+  by the RPC's row locks — two collections of one order
+  are impossible.
+- Customer order detail now includes `pickup_available`
+  (true only for confirmed/ready_for_pickup orders
+  within pickup_ends_at + 30 minutes). It does not say
+  whether a token was issued, which is unreadable by
+  design.
+
+See `../docs/architecture.md` for the full RPC audit,
+role table, and replay/expiry behavior.
+
 ## Milestone 7 routes: order management
 
 Customer (authenticated, own orders only):
