@@ -1,62 +1,62 @@
-"""Central in-app notification catalogue and service (Milestone 12).
+"""Central in-app notification catalogue and service (Milestone 12, activated in W7).
 
-READ THIS FIRST — what is live and what is not:
+READ THIS FIRST — what is live and what is not (W7 state):
 
-LIVE in this milestone (backed by the existing database):
+LIVE (backed by the database, once the W7 migrations are applied):
 - Reading and read-state management of public.notifications
   through the user-context client (SELECT own + UPDATE own
   policies exist). List, unread count, detail, mark-one-read
   (idempotent), and mark-all-read are real API behavior.
-- This catalogue: stable event types, titles, bodies, and
-  deep-link metadata, enforced in one place so no route
-  handler invents its own strings.
-- Pure recipient-resolution and eligibility rules, tested
-  without a database: who SHOULD receive each event, given
-  verified membership/role data.
-- Preference defaults and validation rules.
+- GENERATION through the transactional outbox: database
+  triggers enqueue jobs into private.notification_outbox in the
+  same transaction as the authoritative business change
+  (payment capture/failure/reconciliation, collection, merchant
+  application review, store activation). No route and no
+  frontend code creates notifications; there is no INSERT
+  policy on public.notifications and no general-purpose
+  creation RPC for callers to abuse.
+- DELIVERY by the standalone worker (app/notification_worker.py),
+  which calls backend_enqueue_pickup_reminders and then
+  backend_process_notification_outbox through the service-role
+  client. Delivery is at-least-once per (event, recipient) with
+  deduplication on dedup_key; concurrent workers claim disjoint
+  job sets (FOR UPDATE SKIP LOCKED) and a crashed worker's jobs
+  are reclaimed after the claim window. Exactly-once is NOT
+  claimed: what is guaranteed is exactly-once user-visible
+  effect (the dedup key prevents a second row), not
+  exactly-once processing.
+- PREFERENCES persistence in public.notification_preferences:
+  GET returns the stored row (persisted=true) or documented
+  defaults (persisted=false); PATCH validates and upserts the
+  caller's own row. Mandatory categories (payment_updates,
+  operational_alerts) can never be disabled, in code and by a
+  database CHECK.
+- PICKUP REMINDERS via the worker: eligible orders (confirmed /
+  ready_for_pickup, payment captured, now inside
+  [pickup_starts_at - window, pickup_starts_at)) are enqueued
+  with dedup key pickup_reminder:{order_id}. No process-local
+  timers; the worker loop or a scheduler calling it with --once
+  is the only driver.
 
-NOT LIVE — catalogued and proposed, never claimed as working:
-- Notification GENERATION (inserting rows). The notifications
-  table has NO INSERT policy, so a user-context client cannot
-  insert rows, and the service client may not write tables
-  directly. No approved RPC exists for notification creation,
-  and no function or trigger writes to notifications today.
-  Generation therefore requires the proposed
-  backend_create_notification RPC (see
-  docs/proposals/milestone-12-notification-delivery.md).
-  Until it is approved and applied, no route handler creates
-  notifications, and no event in the catalogue is delivered.
-  Wiring generation calls into payment/pickup/review routes
-  before the RPC exists would fail at RLS and must not be
-  done — the service below builds payloads and resolves
-  recipients, but no live code path calls it to write.
-- Preferences PERSISTENCE. No preferences table exists, so
-  GET returns documented defaults (marked persisted=false)
-  and PATCH validates then returns 501 until the proposed
-  table is approved.
-- Pickup REMINDERS. No scheduler exists in the repository
-  (no cron config, no worker, no Render cron job for
-  SaveBite). reminder_due() is pure eligibility logic for
-  a future scheduler; no reminder job runs or is claimed.
-- The private.notification_outbox (push/email/sms/whatsapp)
-  is DORMANT infrastructure for future external channels.
-  It is not used for in-app notifications (the notifications
-  table IS the in-app delivery mechanism) and no code writes
-  to it today. M12 is in-app only; email, SMS, push, and
-  WhatsApp are out of scope.
-
-Delivery guarantee, stated honestly: once the proposed RPC
-exists, delivery is at-least-once per (event, recipient)
-with deduplication on dedup_key — a retried emission with
-the same key returns the existing row instead of creating
-a second one. Exactly-once is NOT claimed: a crash between
-the business commit and the notification call can still
-lose a notification, and the recovery for that case is a
-reconciliation scan over order_status_events (proposed,
-not built). A notification is never created for a business
-operation that failed, because emission happens only after
-the business call succeeds, in the same request — and
-never from a frontend callback.
+NOT LIVE — catalogued but with no active source, deliberately:
+- reservation_created: notifying on an unpaid reservation is
+  forbidden by the product rule, so no trigger emits it.
+- reservation_expired: backend_release_expired_reservations has
+  no caller/scheduler, so no authoritative expiry event exists.
+- order_cancelled: no order-cancel route exists.
+- Any refund event: request_refund has no route caller and
+  backend_update_refund_status has no caller, so no refund
+  transition can emit today. Adding any of these requires a
+  real business trigger first, not a new notification type.
+- External channels: outbox rows for push/email/sms/whatsapp
+  remain dormant. The W7 processor claims channel='in_app'
+  rows only. No email, SMS, push, or WhatsApp delivery exists.
+- Worker DEPLOYMENT: the worker command exists and is
+  documented, but no production worker or scheduler is
+  configured by this milestone, and the W7 migrations are
+  files in this PR, not applied to live. Until both land,
+  no notification is delivered in production, and that must
+  not be claimed otherwise.
 
 Content rules: titles/bodies contain only order numbers,
 store names, and statuses — never customer emails, phones,
@@ -71,6 +71,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+# ---------------------------------------------------------------- worker
+# Single source of truth for the W7 worker and its database
+# contract. The SQL defaults mirror these values; keep them in
+# sync when either side changes.
+
+#: RPC that claims and delivers one bounded batch of outbox jobs.
+WORKER_PROCESS_RPC = "backend_process_notification_outbox"
+#: RPC that enqueues due pickup reminders. Idempotent.
+WORKER_REMINDER_RPC = "backend_enqueue_pickup_reminders"
+#: Reminder window: notify when pickup starts within this long.
+REMINDER_WINDOW_MINUTES = 60
+#: A 'processing' job older than this is reclaimable.
+OUTBOX_CLAIM_EXPIRY_MINUTES = 10
+#: Delivery attempts per job before it becomes dead-letter.
+OUTBOX_MAX_ATTEMPTS = 5
+#: Default jobs per processor call.
+OUTBOX_DEFAULT_BATCH_SIZE = 50
+
 # ---------------------------------------------------------------- catalogue
 
 
@@ -83,9 +101,11 @@ class NotificationEvent:
     body_template: str
     reference_type: str
     mandatory: bool = False
-    # True only when a real, existing workflow can emit it
-    # today (once the delivery RPC exists). False means the
-    # event is catalogued but has no active source yet.
+    # True only when a real, existing workflow emits it today
+    # (W7 database trigger, or the worker for reminders).
+    # False means the event is catalogued but has no active
+    # source yet — or is deliberately never emitted (see
+    # reservation_created).
     has_active_source: bool = True
 
 
@@ -98,6 +118,9 @@ CATALOGUE: dict[str, NotificationEvent] = {
         "Reservation created",
         "Your reservation for order {order_number} is confirmed. Complete payment before it expires.",
         "order",
+        # Deliberately never emitted: notifying on an unpaid
+        # reservation is forbidden by the product rule.
+        has_active_source=False,
     ),
     "payment_captured": NotificationEvent(
         "payment_captured",
@@ -132,7 +155,9 @@ CATALOGUE: dict[str, NotificationEvent] = {
         "Pickup reminder",
         "Your pickup for order {order_number} at {store_name} starts soon.",
         "order",
-        has_active_source=False,
+        # Emitted by the W7 worker via
+        # backend_enqueue_pickup_reminders, not by a trigger.
+        has_active_source=True,
     ),
     "pickup_completed": NotificationEvent(
         "pickup_completed",
@@ -294,10 +319,10 @@ def build_notification(
     """Render one notification payload from the catalogue.
     Raises ValueError for an unknown event type — event
     types must come from the catalogue, never from
-    free-form caller input. The returned dict is the row
-    the proposed delivery RPC would insert (plus
-    dedup_key, which the RPC stores for deduplication);
-    this function itself writes nothing."""
+    free-form caller input. The returned dict mirrors the
+    outbox job a W7 trigger enqueues (plus dedup_key, which
+    the database stores for deduplication); this function
+    itself writes nothing."""
     event = CATALOGUE.get(event_type)
     if event is None:
         raise ValueError(f"Unknown notification event type: {event_type}")

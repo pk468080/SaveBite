@@ -1,7 +1,6 @@
-"""In-app notification APIs (Milestone 12).
+"""In-app notification APIs (Milestone 12, activated in W7).
 
-What these endpoints do — and what they deliberately do
-not do — follows the audit in app/notifications.py:
+What these endpoints do — and what they deliberately do not do:
 
 - READ + READ-STATE endpoints are real: the
   notifications table has SELECT-own and UPDATE-own
@@ -10,23 +9,22 @@ not do — follows the audit in app/notifications.py:
   authenticated user, and every single-row operation
   re-checks ownership (a missing row and another
   user's row both return 404).
-- GENERATION endpoints do not exist here: the table
-  has no INSERT policy and no approved creation RPC,
-  so no route creates notifications. The catalogue and
-  service in app/notifications.py define what WILL be
-  created once the proposed delivery RPC is approved;
-  until then, claiming delivery would be false.
-- PREFERENCES persistence does not exist: no
-  preferences table exists. GET returns documented
-  defaults (persisted=false); PATCH validates the
-  payload (unknown categories and disabling mandatory
-  categories are rejected with 422) and then returns
-  501, because there is nowhere safe to store the
-  result yet. Returning 200 without persisting would
-  lie to the caller.
+- GENERATION endpoints do not exist here: notifications
+  are created only by W7 database triggers (same
+  transaction as the business change) and delivered by
+  the standalone worker. No route creates notifications,
+  and the table has no INSERT policy for callers.
+- PREFERENCES are persisted in
+  public.notification_preferences, one row per user,
+  readable and writable only by that user. GET returns
+  the stored row (persisted=true) or documented defaults
+  (persisted=false) when the user has never saved
+  settings. PATCH validates (unknown categories and
+  disabling mandatory categories are rejected with 422)
+  and upserts the caller's own row.
 - No email, SMS, push, or WhatsApp delivery exists
-  here. The private.notification_outbox is dormant
-  external-channel infrastructure and is not touched.
+  here. The private.notification_outbox rows for those
+  channels are untouched by these endpoints.
 
 Pagination is database-side (order/limit/offset) with
 an id-only count query, matching the admin pattern.
@@ -67,6 +65,21 @@ router = APIRouter(tags=["notifications"])
 _NOTIFICATION_SELECT = (
     "id,user_id,notification_type,title,body,reference_type,reference_id,"
     "read_at,created_at"
+)
+
+# Columns of public.notification_preferences, in the same
+# order as DEFAULT_PREFERENCES, so GET/PATCH round-trip
+# exactly the categories the catalogue defines.
+_PREFERENCE_COLUMNS = (
+    "user_id",
+    "order_updates",
+    "payment_updates",
+    "pickup_reminders",
+    "collection_confirmation",
+    "new_paid_orders",
+    "pickup_updates",
+    "application_updates",
+    "operational_alerts",
 )
 
 
@@ -158,32 +171,97 @@ async def unread_count(
 )
 async def get_preferences(
     user: AuthenticatedUser = Depends(get_current_user),
+    client: SupabaseRestClient = Depends(get_user_client),
 ) -> NotificationPreferencesResponse:
-    _ = user
+    """Return the caller's stored preferences, or documented
+    defaults (persisted=false) when they never saved any.
+    The row is read through the user-context client under
+    the own-row policy, so another user's row is
+    unreachable here even if its id were guessed."""
+    try:
+        rows = await client.query(
+            "notification_preferences",
+            select=",".join(_PREFERENCE_COLUMNS),
+            filters={"user_id": f"eq.{user.id}"},
+        )
+    except Exception as exc:
+        raise translate_upstream_error(exc) from exc
+    if not rows:
+        return NotificationPreferencesResponse(
+            preferences=dict(DEFAULT_PREFERENCES),
+            mandatory_categories=sorted(MANDATORY_CATEGORIES),
+            persisted=False,
+        )
+    stored = rows[0]
+    preferences = {
+        column: bool(stored.get(column, DEFAULT_PREFERENCES[column]))
+        for column in _PREFERENCE_COLUMNS
+        if column != "user_id"
+    }
     return NotificationPreferencesResponse(
-        preferences=dict(DEFAULT_PREFERENCES),
+        preferences=preferences,
         mandatory_categories=sorted(MANDATORY_CATEGORIES),
-        persisted=False,
+        persisted=True,
     )
 
 
-@router.patch("/v1/notifications/preferences")
+@router.patch(
+    "/v1/notifications/preferences",
+    response_model=NotificationPreferencesResponse,
+)
 async def update_preferences(
     payload: NotificationPreferencesUpdate,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> dict:
-    _ = user
+    client: SupabaseRestClient = Depends(get_user_client),
+) -> NotificationPreferencesResponse:
+    """Validate and persist the caller's own preferences.
+    Unknown categories and disabling a mandatory category
+    are rejected with 422 before anything is written.
+    The write is scoped to the caller's own row by the
+    user_id filter and the own-row policy; no user id is
+    accepted from the request body."""
     errors = validate_preference_updates(payload.preferences)
     if errors:
         raise ApiError(422, "VALIDATION_ERROR", "; ".join(errors))
-    # Validated but not persisted: no preferences table
-    # exists yet. Returning 200 here would falsely claim
-    # the settings were saved.
-    raise ApiError(
-        501,
-        "NOT_IMPLEMENTED",
-        "Notification preferences storage is not yet configured; "
-        "see the proposed preferences table in the milestone documentation.",
+    try:
+        rows = await client.query(
+            "notification_preferences",
+            select=",".join(_PREFERENCE_COLUMNS),
+            filters={"user_id": f"eq.{user.id}"},
+        )
+    except Exception as exc:
+        raise translate_upstream_error(exc) from exc
+    if rows:
+        merged = {
+            column: bool(rows[0].get(column, DEFAULT_PREFERENCES[column]))
+            for column in _PREFERENCE_COLUMNS
+            if column != "user_id"
+        }
+    else:
+        merged = dict(DEFAULT_PREFERENCES)
+    merged.update(payload.preferences)
+    row = {"user_id": str(user.id), **merged}
+    try:
+        if rows:
+            updated = await client.update(
+                "notification_preferences",
+                merged,
+                {"user_id": f"eq.{user.id}"},
+            )
+            if not updated:
+                # The row vanished between read and write
+                # (account deletion cascade); fall back to
+                # insert rather than reporting success
+                # without a stored row.
+                await client.insert("notification_preferences", row)
+        else:
+            await client.insert("notification_preferences", row)
+    except Exception as exc:
+        raise translate_upstream_error(exc) from exc
+    return NotificationPreferencesResponse(
+        preferences=merged,
+        mandatory_categories=sorted(MANDATORY_CATEGORIES),
+        persisted=True,
     )
 
 

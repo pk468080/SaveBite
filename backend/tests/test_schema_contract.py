@@ -68,9 +68,18 @@ def test_no_new_migration_created_for_this_correction():
     migration_files = sorted(
         p.name for p in (REPO / "supabase/migrations").glob("*.sql")
     )
-    assert migration_files == ["20261031060000_remote_schema_baseline.sql"], (
-        f"this correction must not add a production migration; found: {migration_files}"
-    )
+    # The available_quantity correction itself must not add a
+    # production migration. The only other files allowed here
+    # are the W7 notification migrations, which the W7 brief
+    # explicitly authorises as version-controlled files (not
+    # applied to live by the PR). Any further migration must
+    # extend this list deliberately, not slip in unnoticed.
+    assert migration_files == [
+        "20261031060000_remote_schema_baseline.sql",
+        "20261101120000_w7_notification_preferences.sql",
+        "20261101121000_w7_notification_outbox.sql",
+        "20261101122000_w7_notification_delivery.sql",
+    ], f"unexpected migration files: {migration_files}"
     assert "DO NOT APPLY THIS FILE TO THE LIVE PROJECT" in BASELINE.read_text()
 
 

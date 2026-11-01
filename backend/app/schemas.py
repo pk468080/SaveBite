@@ -1456,9 +1456,10 @@ class MarkAllReadResponse(BaseModel):
 
 
 class NotificationPreferencesResponse(BaseModel):
-    """Defaults until the proposed preferences table is
-    approved. persisted=False means these values are the
-    documented defaults, not stored per-user settings."""
+    """Stored preferences when persisted=True; documented
+    defaults when persisted=False (the user never saved
+    settings). Mandatory categories are listed separately
+    so clients can render them as locked on."""
 
     preferences: dict[str, bool]
     mandatory_categories: list[str]

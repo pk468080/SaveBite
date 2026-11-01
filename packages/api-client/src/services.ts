@@ -311,9 +311,11 @@ export const adminService = (client: ApiClient) => ({
     client.get<Page<AdminActivityEvent>>(`/v1/admin/activity${query(params)}`),
 });
 
-/** In-app notifications (M12). Reads and read-state only;
- * generation is server-side once the approved delivery
- * RPC exists and is not part of this client. */
+/** In-app notifications (M12 read APIs, W7 generation +
+ * preferences). Generation is server-side (database
+ * triggers + worker); this client never creates
+ * notifications, it only reads them and manages the
+ * caller's own preferences. */
 export const notificationsService = (client: ApiClient) => ({
   list: (params: { unread_only?: boolean; notification_type?: string; page?: number; page_size?: number } = {}) =>
     client.get<Page<NotificationItem>>(`/v1/notifications${query(params)}`),
@@ -329,6 +331,10 @@ export const notificationsService = (client: ApiClient) => ({
     client.post<{ updated_count: number }>("/v1/notifications/read-all", {}),
   getPreferences: () =>
     client.get<NotificationPreferences>("/v1/notifications/preferences"),
+  updatePreferences: (preferences: Record<string, boolean>) =>
+    client.patch<NotificationPreferences>("/v1/notifications/preferences", {
+      preferences,
+    }),
 });
 
 export function createServices(client: ApiClient) {

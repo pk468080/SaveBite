@@ -546,6 +546,127 @@ compliance roles. No migration, RLS change,
 backend change, or live Supabase change was
 made in W6.
 
+## Notifications: implementation map (verified, W7, M12)
+
+W7 activates in-app notifications end to end. The
+customer and merchant notification pages already
+showed real records from the M12 read APIs; W7
+adds generation, delivery, persistent preferences,
+and pickup reminders. No email, SMS, push, or
+WhatsApp delivery exists.
+
+How generation works (no frontend creation):
+
+- Database triggers enqueue jobs into
+  private.notification_outbox in the SAME
+  transaction as the business change, so a
+  notification can never be created for a
+  rolled-back operation, and a committed
+  operation cannot lose its notification to a
+  crash between the business commit and a
+  separate emission call.
+- Order payment captured: the customer gets
+  payment_captured and the merchant recipients
+  get new_paid_order. Payment failed: the
+  customer gets payment_failed. Payment
+  reconciliation required: operations and super
+  admins get payment_reconciliation_required.
+  Order collected: the customer gets
+  pickup_completed and the merchants get
+  merchant_pickup_completed.
+- Merchant application submitted, approved, or
+  rejected, and store activated or deactivated,
+  notify the merchant recipients and, for
+  application events, the platform admins.
+- Recipients come only from authoritative
+  database relationships: the order customer,
+  active owner/admin merchant members, active
+  store managers and pickup operators, the
+  merchant applicant, and non-revoked
+  operations/super admins. Never from request
+  data. No route and no frontend code creates
+  notifications, and public.notifications has
+  no INSERT policy for callers.
+
+How delivery works:
+
+- A standalone worker (backend/app/
+  notification_worker.py) calls
+  backend_enqueue_pickup_reminders and then
+  backend_process_notification_outbox through
+  the service-role client. Run it continuously
+  or with --once from a scheduler; it holds no
+  queue state, so killing it loses nothing.
+- The processor claims a bounded batch with
+  FOR UPDATE SKIP LOCKED, so concurrent
+  workers claim disjoint sets, and reclaims
+  jobs stuck in processing past 10 minutes.
+- Delivery is at-least-once per event and
+  recipient, with exactly-once user-visible
+  effect through the dedup key: a retried
+  delivery cannot create a second row.
+- Retry uses bounded exponential backoff
+  (about 1, 2, 4, 8 minutes, capped at 30),
+  at most 5 attempts; the 5th failure leaves
+  the row failed, which is never reclaimed
+  (the dead-letter state). One bad payload
+  cannot roll back the rest of a batch.
+- Preferences are checked at delivery: a
+  category the recipient disabled is skipped,
+  never delivered. Mandatory categories
+  (payment_updates, operational_alerts) are
+  always delivered.
+
+Pickup reminders:
+
+- The worker enqueues reminders for confirmed
+  or ready_for_pickup orders with payment
+  captured, when now falls inside
+  [pickup_starts_at - 60 minutes,
+  pickup_starts_at). Comparisons use absolute
+  instants; the store timezone affects display
+  only. Collected, cancelled, expired, unpaid,
+  and past-window orders are never reminded,
+  and one order gets at most one reminder
+  (dedup key pickup_reminder:{order_id}).
+
+Preferences in the interface:
+
+- /customer/notifications and
+  /merchant/notifications each show a
+  preferences section with only that
+  audience's categories, backed by GET and
+  PATCH /v1/notifications/preferences.
+  Mandatory categories render locked on.
+  Toggles are a draft until Save succeeds:
+  "Saved" appears only after the API
+  confirms, and a failed save shows the error
+  with no saved confirmation.
+
+Deliberately NOT built in W7 (no supporting
+business trigger exists):
+
+- Reservation notifications: notifying on an
+  unpaid reservation is forbidden by the
+  product rule, so reservation_created is
+  never emitted. Reservation expiry has no
+  running sweeper, order cancellation has no
+  route, and refunds have no route caller, so
+  no expiry, cancellation, or refund
+  notification exists. Each needs a real
+  business trigger first, not just a new
+  notification type.
+- External channels: outbox rows for push,
+  email, SMS, and WhatsApp remain dormant;
+  the processor claims in-app rows only.
+- Worker deployment and migration
+  application: the worker command and the
+  three migration files exist in this PR, but
+  no production worker or scheduler is
+  configured and no migration is applied to
+  live by this PR. Until both land, no
+  notification is delivered in production.
+
 ## Known limitations (W4)
 
 - No merchant-facing document-upload endpoint
@@ -696,8 +817,13 @@ placeholder shapes and were corrected in W3.
   return the same 404 as missing ones.
 - `GET /v1/notifications`, `/unread-count`,
   `POST /{id}/read`, `POST /read-all` (M12, own
-  records only). Generation is not active; there are
-  no fake notifications.
+  records only). Generation is active since W7:
+  database triggers enqueue in-app notifications
+  for payment, collection, merchant application,
+  and store events, delivered by the standalone
+  worker; preferences are persistent via GET and
+  PATCH /v1/notifications/preferences. There are
+  no fake notifications and no external channels.
 
 ### Idempotency-key lifecycle
 

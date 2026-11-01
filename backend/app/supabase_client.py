@@ -61,6 +61,10 @@ BACKEND_RPCS = frozenset(
         "backend_update_refund_status",
         "backend_post_ledger_transaction",
         "backend_reverse_ledger_transaction",
+        # W7: notification outbox processor + pickup reminder
+        # enqueue, called by the standalone worker only.
+        "backend_process_notification_outbox",
+        "backend_enqueue_pickup_reminders",
     }
 )
 
