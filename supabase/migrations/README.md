@@ -95,6 +95,20 @@ only then start the notification worker:
   the W7 and W8 files (which remain pending their own
   approved process).
 
+## Worker RPC revoke file — NOT applied to live
+
+- `20261101190000_notification_worker_rpc_revoke_anon_authenticated.sql`
+  (revokes EXECUTE on the two W7 worker RPCs from anon
+  and authenticated. The W8 grants file only revoked
+  PUBLIC, but Supabase default privileges grant EXECUTE
+  directly to anon and authenticated at creation, so
+  those direct grants survived it. This file only records
+  the change. Apply it in timestamp order after the W7
+  and W8 files, and verify at apply time with
+  has_function_privilege that only service_role holds
+  EXECUTE on both functions. Live remediation is handled
+  separately; this PR does not apply anything.)
+
 Before applying, verify at apply time: the notifications
 type CHECK against live rows, EXECUTE privileges for
 anon / authenticated / service_role on both worker RPCs,
