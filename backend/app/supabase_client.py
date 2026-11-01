@@ -70,6 +70,12 @@ BACKEND_RPCS = frozenset(
         # enqueue, called by the standalone worker only.
         "backend_process_notification_outbox",
         "backend_enqueue_pickup_reminders",
+        # W9.1: expired-reservation cleanup (v2 — tiered
+        # release that never touches authorized/captured
+        # money and preserves reconciliation flags).
+        # Called by the standalone reservation cleanup
+        # worker only, never by a route.
+        "backend_release_expired_reservations_v2",
     }
 )
 

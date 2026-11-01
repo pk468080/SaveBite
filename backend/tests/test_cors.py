@@ -1,7 +1,19 @@
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.config import Settings
+from app.main import create_app
+
+# The configured SaveBite website origin. This is the
+# origin the production backend allows; the preflight
+# tests below must use exactly it, never "*".
+WEBSITE_ORIGIN = "https://savebite-gilt.vercel.app"
+
+
+def _preflight_client() -> TestClient:
+    settings = _settings(environment="production", allowed_origins=[WEBSITE_ORIGIN])
+    return TestClient(create_app(settings))
 
 
 def _settings(**overrides):
@@ -113,3 +125,47 @@ def test_env_production_wildcard_rejected(monkeypatch):
     monkeypatch.setenv("ALLOWED_ORIGINS", "*")
     with pytest.raises(ValidationError):
         Settings()
+
+
+# --- W9.1: actual CORS preflight ---
+# The frontend sends Idempotency-Key on reservation and
+# checkout POSTs (packages/api-client). Before W9.1 the
+# allowlist omitted it, so browsers blocked those calls
+# at preflight. These tests issue a real OPTIONS
+# preflight through the middleware stack, not a config
+# assertion, and pin the production origin restriction.
+
+
+def test_preflight_permits_idempotency_key_for_website_origin():
+    client = _preflight_client()
+    response = client.options(
+        "/v1/orders/reservations",
+        headers={
+            "Origin": WEBSITE_ORIGIN,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": (
+                "authorization, content-type, idempotency-key"
+            ),
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == WEBSITE_ORIGIN
+    allowed = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allowed
+    assert "content-type" in allowed
+    assert "idempotency-key" in allowed
+
+
+def test_preflight_denies_unlisted_origin():
+    client = _preflight_client()
+    response = client.options(
+        "/v1/orders/reservations",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": (
+                "authorization, content-type, idempotency-key"
+            ),
+        },
+    )
+    assert "access-control-allow-origin" not in response.headers

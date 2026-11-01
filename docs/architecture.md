@@ -34,6 +34,11 @@ built here; those are Milestones 3–9, each on top of this foundation.
   `backend_release_expired_reservations`, `backend_review_merchant`,
   `backend_review_store`, `backend_update_refund_status`,
   `backend_post_ledger_transaction`, `backend_reverse_ledger_transaction`.
+  W9.1 adds `backend_release_expired_reservations_v2`
+  (tiered expired-reservation cleanup; see the migration
+  header in `20261101200000_w91_reservation_expiry.sql`)
+  and `backend_get_gateway_order_for_payment_transaction`
+  (B1 checkout retry lookup).
 - Money is NUMERIC in the database; pickup is customer-only (no
   delivery in MVP); a reservation hold currently expires after five
   minutes (database rule, not re-implemented in app code).
@@ -444,6 +449,16 @@ Consequences the API enforces:
   + inventory_events. This milestone does NOT recreate any of
   that in Python, and the inventory endpoint is read-only.
 - `backend_release_expired_reservations` is server-only.
+  W9.1 note: v1 is superseded for cleanup by
+  `backend_release_expired_reservations_v2`, which adds
+  the tier rules that make abandoned-checkout cleanup
+  safe (releases 'created'/'failed'/no-transaction
+  orders, preserves 'reconciliation_required' orders
+  untouched, never touches 'authorized'/'captured'/
+  'refunded'/'partially_refunded' orders). v1 is left
+  intact; the new worker operation
+  (`backend/app/reservation_cleanup.py`) calls v2 only,
+  and no worker or scheduler is deployed by W9.1.
 
 ### Availability — corrected (2026-10-31): no migration needed
 

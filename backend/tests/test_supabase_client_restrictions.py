@@ -47,6 +47,8 @@ def test_allowlist_contents_match_database_contract():
         "backend_enqueue_pickup_reminders",
         # B1: checkout retry lookup (checkout router only).
         "backend_get_gateway_order_for_payment_transaction",
+        # W9.1: reservation cleanup v2 (cleanup worker only).
+        "backend_release_expired_reservations_v2",
     }
 
 

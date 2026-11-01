@@ -11,7 +11,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, EmptyState, LoadingState } from "@/components/ui/states";
 import { createBrowserApiClient } from "@/lib/api/browser";
 import { cartFingerprint } from "@/lib/cart";
-import { checkoutKeyFor, reservationKeyFor } from "@/lib/idempotency";
+import {
+  checkoutKeyFor,
+  clearReservationKey,
+  isTerminalOrderStatus,
+  reservationKeyFor,
+} from "@/lib/idempotency";
 import { formatINR, formatPickupWindow } from "@/lib/marketplace";
 import { orderStatusLabel, paymentStatusLabel } from "@/lib/order-labels";
 import { loadRazorpayScript, openRazorpayCheckout } from "@/lib/razorpay";
@@ -118,8 +123,19 @@ function CheckoutFlow() {
       const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
       if (stored) {
         try {
-          const parsed = JSON.parse(stored) as { orderId: string };
+          const parsed = JSON.parse(stored) as {
+            orderId: string;
+            fingerprint?: string;
+          };
           void refreshOrder(parsed.orderId).then((detail) => {
+            if (isTerminalOrderStatus(detail.status)) {
+              // Terminal attempt, nothing to re-reserve:
+              // drop the stale reference AND its key, so
+              // a later same-contents cart reserves fresh
+              // instead of replaying this dead order.
+              sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+              if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
+            }
             setPhase(detail.status === "pending_payment" ? "reserved" : "not-payable");
           });
           return;
@@ -133,31 +149,40 @@ function CheckoutFlow() {
     const fingerprint = cartFingerprint(cart);
     if (attemptRef.current === fingerprint) return;
     attemptRef.current = fingerprint;
-    const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as { orderId: string; fingerprint: string };
-        if (parsed.fingerprint === fingerprint) {
-          void refreshOrder(parsed.orderId).then((detail) => {
-            setPhase(detail.status === "pending_payment" ? "reserved" : "not-payable");
-          });
-          return;
+    void (async () => {
+      const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as { orderId: string; fingerprint: string };
+          if (parsed.fingerprint === fingerprint) {
+            const detail = await refreshOrder(parsed.orderId);
+            if (!isTerminalOrderStatus(detail.status)) {
+              setPhase("reserved");
+              return;
+            }
+            // W9.1: the stored attempt is terminal, but the
+            // customer has a live cart with the same
+            // contents. Clear the stale reference AND its
+            // key, then fall through to a fresh
+            // reservation below. Reusing the old key would
+            // make the backend replay this dead order.
+            sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+            clearReservationKey(fingerprint);
+          }
+        } catch {
+          sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
         }
-      } catch {
-        sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
       }
-    }
-    setPhase("reserving");
-    const snapshot = cart.items.map((item) => ({ title: item.title, quantity: item.quantity }));
-    services()
-      .orders.createReservation(
-        {
-          store_id: cart.storeId,
-          items: cart.items.map((item) => ({ listing_id: item.listingId, quantity: item.quantity })),
-        },
-        reservationKeyFor(fingerprint),
-      )
-      .then((created) => {
+      setPhase("reserving");
+      const snapshot = cart.items.map((item) => ({ title: item.title, quantity: item.quantity }));
+      try {
+        const created = await services().orders.createReservation(
+          {
+            store_id: cart.storeId,
+            items: cart.items.map((item) => ({ listing_id: item.listingId, quantity: item.quantity })),
+          },
+          reservationKeyFor(fingerprint),
+        );
         setReservation(created);
         setCartSnapshot(snapshot);
         sessionStorage.setItem(
@@ -167,21 +192,54 @@ function CheckoutFlow() {
         clear();
         // A replay carries no expiry: the order detail
         // is authoritative, so always re-read it.
-        return refreshOrder(created.order_id).then((detail) => {
-          setPhase(detail.status === "pending_payment" ? "reserved" : "not-payable");
-        });
-      })
-      .catch((caught: unknown) => {
+        const detail = await refreshOrder(created.order_id);
+        if (isTerminalOrderStatus(detail.status)) {
+          // Defensive: the create call replayed a terminal
+          // order (a stale key raced the clear above).
+          // Drop the stale attempt so re-adding the same
+          // items can reserve fresh; never keep a dead
+          // order as the active attempt.
+          sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+          clearReservationKey(fingerprint);
+          attemptRef.current = null;
+          setPhase("not-payable");
+          return;
+        }
+        setPhase("reserved");
+      } catch (caught: unknown) {
+        // Do NOT clear the key here: a failed request is
+        // ambiguous (the reservation may have succeeded
+        // server-side), and the key is what makes a retry
+        // replay instead of duplicating.
         setError(errorMessage(caught));
         setPhase("error");
-      });
+      }
+    })();
   }, [cartReady, cart, orderIdParam, refreshOrder, services, clear]);
 
   const handleExpire = useCallback(() => {
     const id = order?.id ?? reservation?.order_id;
     if (!id) return;
+    const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
     sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
-    void refreshOrder(id).then(() => setPhase("expired"));
+    void refreshOrder(id).then((detail) => {
+      // W9.1: the countdown firing proves the reservation
+      // expired — but only a terminal backend status
+      // proves it. A skewed client clock could fire
+      // early while the reservation is still live, so
+      // the key is cleared only on a terminal read;
+      // keeping it lets a refresh replay the live order
+      // instead of duplicating it.
+      if (stored && isTerminalOrderStatus(detail.status)) {
+        try {
+          const parsed = JSON.parse(stored) as { fingerprint?: string };
+          if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
+        } catch {
+          // Stale reference already removed above.
+        }
+      }
+      setPhase("expired");
+    });
   }, [order, reservation, refreshOrder]);
 
   async function handlePay() {
@@ -213,8 +271,25 @@ function CheckoutFlow() {
               razorpay_signature: response.razorpay_signature,
             })
             .then(() => refreshOrder(id))
-            .then(() => {
+            .then((detail) => {
+              // W9.1: payment verified means this attempt
+              // is terminal (confirmed). Drop the stale
+              // reference AND its key, so buying the same
+              // items again in this tab reserves fresh
+              // instead of replaying this completed order.
+              // The key is cleared only on this definite
+              // backend status, never on a failed verify
+              // (see the catch below, which keeps it).
+              const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
               sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+              if (stored && isTerminalOrderStatus(detail.status)) {
+                try {
+                  const parsed = JSON.parse(stored) as { fingerprint?: string };
+                  if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
+                } catch {
+                  // Stale reference already removed above.
+                }
+              }
               router.push(`/customer/orders/${id}/payment`);
             })
             .catch((caught: unknown) => {

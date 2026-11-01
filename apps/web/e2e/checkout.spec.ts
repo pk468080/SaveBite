@@ -216,3 +216,66 @@ test("dismissed modal is not success; retry reopens the same Razorpay order", as
   );
   expect(opened).toEqual(["order_mock_1", "order_mock_1"]);
 });
+
+test("terminal stored order does not poison a fresh same-items checkout", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await signIn(page);
+
+  // First attempt: reserve the bag.
+  await page.goto(`/marketplace/${LISTING_ID}`);
+  await expect(page.getByText("Evening Bakery Bag").first()).toBeVisible();
+  await page.getByRole("button", { name: "Add to cart" }).click();
+  await expect(page.getByText("Added.")).toBeVisible();
+
+  await page.goto("/cart");
+  const reservationResponse = page.waitForResponse("**/v1/orders/reservations");
+  await page.getByRole("button", { name: "Continue to checkout" }).click();
+  const firstOrder = await (await reservationResponse).json();
+  const firstOrderNumber = firstOrder.order_number as string;
+  await expect(
+    page.getByText(new RegExp(`Order ${firstOrderNumber}`)),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pay with Razorpay" })).toBeVisible();
+
+  // The order becomes terminal WITHOUT the checkout page
+  // observing it — the production shape is a webhook
+  // confirm or a background expiry while the customer is
+  // elsewhere; here the stub's test-only control route
+  // does the same to exactly this order.
+  const expire = await page.request.post(
+    `http://localhost:8000/__e2e__/orders/${firstOrder.order_id}/expire`,
+  );
+  expect(expire.ok()).toBe(true);
+
+  // Same items, same tab, same quantity: the customer
+  // buys again. Before W9.1 the stored terminal attempt
+  // (and its fingerprint key, which the backend would
+  // replay as the dead order) left this page stuck on
+  // "can no longer be paid". Now it must reserve fresh.
+  await page.goto(`/marketplace/${LISTING_ID}`);
+  await page.getByRole("button", { name: "Add to cart" }).click();
+  await expect(page.getByText("Added.")).toBeVisible();
+  await page.goto("/cart");
+  const secondReservationResponse = page.waitForResponse("**/v1/orders/reservations");
+  await page.getByRole("button", { name: "Continue to checkout" }).click();
+  const secondOrder = await (await secondReservationResponse).json();
+  await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pay with Razorpay" })).toBeVisible();
+  const orderText = await page.getByText(/Order SB-E2E-/).first().textContent();
+  expect(orderText).toContain("Order ");
+  expect(orderText).not.toContain(firstOrderNumber);
+
+  // Leave no pending order behind: the stub verify
+  // endpoint confirms the FIRST pending order globally,
+  // so a leftover pending order would steal another
+  // spec's verification (the pickup spec seeds and
+  // verifies its own order and asserts on that exact
+  // order). Expiring this test's fresh reservation
+  // keeps the shared stub clean for other specs.
+  const expireSecond = await page.request.post(
+    `http://localhost:8000/__e2e__/orders/${secondOrder.order_id}/expire`,
+  );
+  expect(expireSecond.ok()).toBe(true);
+});
