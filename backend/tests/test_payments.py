@@ -55,9 +55,10 @@ def webhook_signature(raw: bytes):
 
 
 class FakeUserClient:
-    def __init__(self, rpc_result=None, rpc_error=None):
+    def __init__(self, rpc_result=None, rpc_error=None, rpc_result_fn=None):
         self.rpc_result = rpc_result
         self.rpc_error = rpc_error
+        self.rpc_result_fn = rpc_result_fn
         self.rpc_calls = []
 
     async def rpc(self, name, params):
@@ -65,29 +66,67 @@ class FakeUserClient:
         self.rpc_calls.append((name, params))
         if self.rpc_error is not None:
             raise self.rpc_error
+        if self.rpc_result_fn is not None:
+            return self.rpc_result_fn(name, params)
         return self.rpc_result
 
 
 class FakeServiceClient:
     """Enforces the backend_* allowlist and the confirm /
     mark-failed state rules from the real RPCs (captured is
-    idempotent; a captured payment cannot be failed)."""
+    idempotent; a captured payment cannot be failed). It also
+    models the real attach / lookup state rules (B1): attach
+    requires the row to be unattached or attached to the SAME
+    gateway order id, a different id is a
+    gateway_order_id_conflict, and the lookup RPC returns the
+    currently attached order id (if any) plus status."""
 
-    def __init__(self, rpc_error=None):
+    def __init__(self, rpc_error=None, rpc_errors=None):
         self.rpc_error = rpc_error
+        self.rpc_errors = rpc_errors or {}
         self.rpc_calls = []
         self.captured: set[str] = set()
         self.failed: set[str] = set()
         self.recorded_events: dict[str, dict] = {}
+        self.attached: dict[str, str] = {}
+        self.txn_status: dict[str, str] = {}
+        self.lookup_overrides: list = []
+        self.fail_attach_after_commit = False
+        self._attach_committed_once = False
 
     async def rpc(self, name, params):
         assert name in BACKEND_RPCS, (
             f"service client may only call backend RPCs, not {name}"
         )
         self.rpc_calls.append((name, params))
+        if name in self.rpc_errors:
+            raise self.rpc_errors[name]
         if self.rpc_error is not None:
             raise self.rpc_error
+        if name == "backend_get_gateway_order_for_payment_transaction":
+            if self.lookup_overrides:
+                override = self.lookup_overrides.pop(0)
+                if isinstance(override, Exception):
+                    raise override
+                return override
+            txn = params["p_payment_transaction_id"]
+            return {
+                "payment_transaction_id": txn,
+                "order_id": params["p_order_id"],
+                "gateway": "razorpay",
+                "gateway_order_id": self.attached.get(txn),
+                "status": self.txn_status.get(txn, "created"),
+            }
         if name == "backend_attach_gateway_order":
+            txn = params["p_payment_transaction_id"]
+            new_id = params["p_gateway_order_id"]
+            existing = self.attached.get(txn)
+            if existing is not None and existing != new_id:
+                raise _upstream_error(400, "22023", "gateway_order_id_conflict")
+            self.attached[txn] = new_id
+            if self.fail_attach_after_commit and not self._attach_committed_once:
+                self._attach_committed_once = True
+                raise _upstream_error(504, "timeout", "Upstream service error")
             return None
         if name == "backend_confirm_payment_capture":
             txn = params["p_payment_transaction_id"]
@@ -108,13 +147,21 @@ class FakeServiceClient:
 
 class FakeRazorpay(RazorpayClient):
     def __init__(
-        self, payment=None, order_notes=None, fail_create=False, timeout_create=False
+        self,
+        payment=None,
+        order_notes=None,
+        fail_create=False,
+        timeout_create=False,
+        order_ids=None,
+        reply_overrides=None,
     ):
         super().__init__(KEY_ID, KEY_SECRET)
         self.payment = payment
         self.order_notes = order_notes
         self.fail_create = fail_create
         self.timeout_create = timeout_create
+        self.order_ids = list(order_ids) if order_ids else []
+        self.reply_overrides = reply_overrides or {}
         self.create_calls = []
         self.get_payment_calls = []
         self.get_order_calls = []
@@ -125,12 +172,15 @@ class FakeRazorpay(RazorpayClient):
             raise BadGatewayError("Payment provider is unavailable")
         if self.fail_create:
             raise BadGatewayError("Payment provider request failed")
-        return {
-            "id": RZP_ORDER_ID,
+        order_id = self.order_ids.pop(0) if self.order_ids else RZP_ORDER_ID
+        result = {
+            "id": order_id,
             "amount": amount_paise,
             "currency": currency,
             "status": "created",
         }
+        result.update(self.reply_overrides)
+        return result
 
     async def get_payment(self, payment_id):
         self.get_payment_calls.append(payment_id)
@@ -243,12 +293,19 @@ def test_checkout_success():
     ]
     assert service_fake.rpc_calls == [
         (
+            "backend_get_gateway_order_for_payment_transaction",
+            {
+                "p_payment_transaction_id": str(TXN_ID),
+                "p_order_id": str(ORDER_ID),
+            },
+        ),
+        (
             "backend_attach_gateway_order",
             {
                 "p_payment_transaction_id": str(TXN_ID),
                 "p_gateway_order_id": RZP_ORDER_ID,
             },
-        )
+        ),
     ]
 
 
@@ -297,41 +354,72 @@ def test_checkout_idempotency_key_validation(key):
 
 
 def test_checkout_repeated_same_key_reuses_transaction():
-    # Same key, same order: begin returns the same transaction;
-    # the new Razorpay order is attached (same flow as first
-    # checkout, with the same transaction id).
+    # B1: same key, same order: begin returns the same
+    # transaction, the lookup finds the already-attached
+    # Razorpay order, and it is re-issued — no second
+    # Razorpay order is created and no attach is attempted.
     user_fake = FakeUserClient(rpc_result=_checkout_result())
     service_fake = FakeServiceClient()
-    client = _client_with(user_fake, service_fake, FakeRazorpay())
+    razorpay_fake = FakeRazorpay()
+    client = _client_with(user_fake, service_fake, razorpay_fake)
+    bodies = []
     for _ in range(2):
         response = client.post(
             f"/v1/orders/{ORDER_ID}/checkout",
             headers={"Idempotency-Key": "checkout-key-123456"},
         )
         assert response.status_code == 201
+        bodies.append(response.json())
     assert len(user_fake.rpc_calls) == 2
     assert all(
         call[1]["p_idempotency_key"] == "checkout-key-123456"
         for call in user_fake.rpc_calls
+    )
+    assert bodies[0]["razorpay_order_id"] == bodies[1]["razorpay_order_id"]
+    assert bodies[0]["razorpay_order_id"] == RZP_ORDER_ID
+    assert len(razorpay_fake.create_calls) == 1
+    assert (
+        sum(
+            1
+            for call in service_fake.rpc_calls
+            if call[0] == "backend_attach_gateway_order"
+        )
+        == 1
     )
 
 
 def test_checkout_razorpay_timeout_is_502_and_no_attach():
     user_fake = FakeUserClient(rpc_result=_checkout_result())
     service_fake = FakeServiceClient()
-    client = _client_with(user_fake, service_fake, FakeRazorpay(timeout_create=True))
+    razorpay_fake = FakeRazorpay(timeout_create=True)
+    client = _client_with(user_fake, service_fake, razorpay_fake)
     response = client.post(
         f"/v1/orders/{ORDER_ID}/checkout",
         headers={"Idempotency-Key": "checkout-key-123456"},
     )
     assert response.status_code == 502
-    assert service_fake.rpc_calls == []
+    # The lookup read happened, but no attach was attempted
+    # and the provider create was called exactly once.
+    assert service_fake.rpc_calls == [
+        (
+            "backend_get_gateway_order_for_payment_transaction",
+            {
+                "p_payment_transaction_id": str(TXN_ID),
+                "p_order_id": str(ORDER_ID),
+            },
+        )
+    ]
+    assert len(razorpay_fake.create_calls) == 1
 
 
 def test_checkout_attach_failure_rejected():
     user_fake = FakeUserClient(rpc_result=_checkout_result())
     service_fake = FakeServiceClient(
-        rpc_error=_upstream_error(400, "P0001", "payment_transaction_not_attachable")
+        rpc_errors={
+            "backend_attach_gateway_order": _upstream_error(
+                400, "P0001", "payment_transaction_not_attachable"
+            )
+        }
     )
     client = _client_with(user_fake, service_fake, FakeRazorpay())
     response = client.post(
@@ -339,6 +427,10 @@ def test_checkout_attach_failure_rejected():
         headers={"Idempotency-Key": "checkout-key-123456"},
     )
     assert response.status_code == 422
+    assert response.json()["error"]["message"] == "payment_transaction_not_attachable"
+    # The failure is at attach time, after the lookup read and
+    # the provider create — and no order id is handed out.
+    assert "razorpay_order_id" not in response.text
 
 
 def test_checkout_amount_conversion_and_currency():
@@ -687,3 +779,294 @@ def test_razorpay_client_never_logs_secret():
     source = pathlib.Path("app/razorpay_client.py").read_text()
     assert "logging" not in source
     assert "print(" not in source
+
+
+# --- B1: checkout retry recovery ----------------------------------------
+
+OTHER_ORDER_ID = UUID("55555555-5555-4555-8555-555555555555")
+TXN_ID_2 = UUID("44444444-4444-4444-8444-444444444444")
+
+
+def _b1_client(user_fake=None, service_fake=None, razorpay_fake=None):
+    return _client_with(
+        user_fake or FakeUserClient(rpc_result=_checkout_result()),
+        service_fake or FakeServiceClient(),
+        razorpay_fake or FakeRazorpay(),
+    )
+
+
+def _b1_checkout(client, order_id=ORDER_ID, key="checkout-key-123456"):
+    return client.post(
+        f"/v1/orders/{order_id}/checkout", headers={"Idempotency-Key": key}
+    )
+
+
+def test_b1_sequential_retry_after_lost_response_reuses_order():
+    # The first checkout attaches; the second call (same key,
+    # e.g. after a lost response) must return the identical
+    # response, not a second gateway order.
+    service_fake = FakeServiceClient()
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    first = _b1_checkout(client)
+    second = _b1_checkout(client)
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json() == second.json()
+    assert first.json()["razorpay_order_id"] == RZP_ORDER_ID
+    assert len(razorpay_fake.create_calls) == 1
+    assert (
+        sum(
+            1
+            for call in service_fake.rpc_calls
+            if call[0] == "backend_attach_gateway_order"
+        )
+        == 1
+    )
+
+
+def test_b1_different_key_creates_new_transaction():
+    # A different idempotency key is a different logical
+    # attempt (e.g. a new tab): a new transaction, a new
+    # gateway order, and no reuse of the first order.
+    def begin_fn(name, params):
+        txn = (
+            str(TXN_ID)
+            if params["p_idempotency_key"] == "checkout-key-aaaaaa1"
+            else str(TXN_ID_2)
+        )
+        return _checkout_result(payment_transaction_id=txn)
+
+    service_fake = FakeServiceClient()
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(
+        user_fake=FakeUserClient(rpc_result_fn=begin_fn),
+        service_fake=service_fake,
+        razorpay_fake=razorpay_fake,
+    )
+    first = _b1_checkout(client, key="checkout-key-aaaaaa1")
+    second = _b1_checkout(client, key="checkout-key-bbbbbb2")
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["payment_transaction_id"] == str(TXN_ID)
+    assert second.json()["payment_transaction_id"] == str(TXN_ID_2)
+    assert len(razorpay_fake.create_calls) == 2
+
+
+def test_b1_different_order_same_key_conflict():
+    # The idempotency key is globally unique: the same key
+    # for another order is a conflict, and no provider order
+    # is created for it.
+    def begin_fn(name, params):
+        if params["p_order_id"] != str(ORDER_ID):
+            raise _upstream_error(400, "22023", "payment_idempotency_conflict")
+        return _checkout_result()
+
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(
+        user_fake=FakeUserClient(rpc_result_fn=begin_fn),
+        razorpay_fake=razorpay_fake,
+    )
+    assert _b1_checkout(client).status_code == 201
+    response = _b1_checkout(client, order_id=OTHER_ORDER_ID)
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == "payment_idempotency_conflict"
+    assert len(razorpay_fake.create_calls) == 1
+
+
+def test_b1_concurrent_retry_returns_winner_not_loser():
+    # Two requests sharing one transaction: A attaches first.
+    # B's lookup ran before A's attach (simulated with a
+    # one-shot stale lookup result), so B creates a second
+    # provider order and loses the attach race. B must return
+    # A's winning order — never its own unattached order,
+    # and never a bare 422 now that a valid order exists.
+    winner = "order_race_winner"
+    loser = "order_race_loser"
+    service_fake = FakeServiceClient()
+    razorpay_fake = FakeRazorpay(order_ids=[winner, loser])
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    first = _b1_checkout(client)
+    assert first.status_code == 201
+    assert first.json()["razorpay_order_id"] == winner
+    service_fake.lookup_overrides.append(
+        {
+            "payment_transaction_id": str(TXN_ID),
+            "order_id": str(ORDER_ID),
+            "gateway": "razorpay",
+            "gateway_order_id": None,
+            "status": "created",
+        }
+    )
+    second = _b1_checkout(client)
+    assert second.status_code == 201
+    assert second.json()["razorpay_order_id"] == winner
+    assert loser not in first.text
+    assert loser not in second.text
+    assert len(razorpay_fake.create_calls) == 2
+
+
+def test_b1_attach_committed_but_response_lost_then_retry_recovers():
+    # The attach commits but its response is lost (the first
+    # call sees a 502). The retry's lookup finds the
+    # committed order and returns it; no second provider
+    # order is created.
+    service_fake = FakeServiceClient()
+    service_fake.fail_attach_after_commit = True
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    first = _b1_checkout(client)
+    assert first.status_code == 502
+    assert service_fake.attached[str(TXN_ID)] == RZP_ORDER_ID
+    second = _b1_checkout(client)
+    assert second.status_code == 201
+    assert second.json()["razorpay_order_id"] == RZP_ORDER_ID
+    assert len(razorpay_fake.create_calls) == 1
+
+
+def test_b1_conflict_without_winner_keeps_original_error():
+    # An attach conflict with no committed winner on
+    # re-lookup (e.g. the conflict came from a failed
+    # attach, not a winning one) keeps the original 422 —
+    # the loser's unattached order is never returned.
+    service_fake = FakeServiceClient(
+        rpc_errors={
+            "backend_attach_gateway_order": _upstream_error(
+                400, "22023", "gateway_order_id_conflict"
+            )
+        }
+    )
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    response = _b1_checkout(client)
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == "gateway_order_id_conflict"
+    assert "razorpay_order_id" not in response.text
+    assert len(razorpay_fake.create_calls) == 1
+
+
+def test_b1_relookup_failure_keeps_original_conflict():
+    # The attach loses a race, but the recovery re-lookup
+    # itself fails: fail closed with the original conflict,
+    # never a fabricated or guessed order id.
+    service_fake = FakeServiceClient()
+    service_fake.attached[str(TXN_ID)] = "order_race_winner"
+    service_fake.lookup_overrides = [
+        {
+            "payment_transaction_id": str(TXN_ID),
+            "order_id": str(ORDER_ID),
+            "gateway": "razorpay",
+            "gateway_order_id": None,
+            "status": "created",
+        },
+        _upstream_error(503, "", "Upstream service error"),
+    ]
+    razorpay_fake = FakeRazorpay(order_ids=["order_race_loser"])
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    response = _b1_checkout(client)
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == "gateway_order_id_conflict"
+    assert "order_race_loser" not in response.text
+
+
+def test_b1_lookup_unavailable_fails_closed():
+    # The attachment state cannot be determined: no provider
+    # order may be created, and no attach may be attempted.
+    service_fake = FakeServiceClient(
+        rpc_errors={
+            "backend_get_gateway_order_for_payment_transaction": _upstream_error(
+                503, "", "Upstream service error"
+            )
+        }
+    )
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    response = _b1_checkout(client)
+    assert response.status_code == 502
+    assert len(razorpay_fake.create_calls) == 0
+    assert not any(
+        call[0] == "backend_attach_gateway_order" for call in service_fake.rpc_calls
+    )
+
+
+def test_b1_timeout_then_retry_creates_fresh_order():
+    # A timed-out create attaches nothing, so it cannot be
+    # recovered — but the retry must succeed with a fresh
+    # order instead of failing, and the timed-out attempt
+    # must never be returned (it produced no order id here).
+    razorpay_fake = FakeRazorpay(timeout_create=True, order_ids=["order_retry_fresh"])
+    client = _b1_client(razorpay_fake=razorpay_fake)
+    first = _b1_checkout(client)
+    assert first.status_code == 502
+    razorpay_fake.timeout_create = False
+    second = _b1_checkout(client)
+    assert second.status_code == 201
+    assert second.json()["razorpay_order_id"] == "order_retry_fresh"
+    assert len(razorpay_fake.create_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "captured",
+        "failed",
+        "reconciliation_required",
+        "refunded",
+        "partially_refunded",
+    ],
+)
+@pytest.mark.parametrize("attached", [True, False])
+def test_b1_non_attachable_statuses_create_nothing(status, attached):
+    # No new gateway order for captured, failed,
+    # reconciliation-required, refunded, or any other
+    # non-attachable state — whether or not an order was
+    # previously attached. A failed payment needs a fresh
+    # transaction (new idempotency key), not a reset here.
+    service_fake = FakeServiceClient()
+    service_fake.txn_status[str(TXN_ID)] = status
+    if attached:
+        service_fake.attached[str(TXN_ID)] = RZP_ORDER_ID
+    razorpay_fake = FakeRazorpay()
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    response = _b1_checkout(client)
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == "payment_transaction_not_attachable"
+    assert len(razorpay_fake.create_calls) == 0
+
+
+@pytest.mark.parametrize("reply_overrides", [{"amount": 999}, {"currency": "USD"}])
+def test_b1_provider_mismatch_not_attached(reply_overrides):
+    # A provider order for the wrong amount or currency is
+    # never attached and never handed to the frontend.
+    service_fake = FakeServiceClient()
+    razorpay_fake = FakeRazorpay(reply_overrides=reply_overrides)
+    client = _b1_client(service_fake=service_fake, razorpay_fake=razorpay_fake)
+    response = _b1_checkout(client)
+    assert response.status_code == 502
+    assert "razorpay_order_id" not in response.text
+    assert not any(
+        call[0] == "backend_attach_gateway_order" for call in service_fake.rpc_calls
+    )
+
+
+def test_b1_lookup_rpc_is_service_only_and_no_table_query():
+    # The user-context client refuses any backend_* name
+    # before any HTTP call, and the checkout path calls the
+    # service client only for the lookup + attach RPCs —
+    # never a table query, so no private-table access path
+    # is introduced by B1.
+    user_fake = FakeUserClient()
+    with pytest.raises(AssertionError):
+        import asyncio
+
+        asyncio.run(
+            user_fake.rpc("backend_get_gateway_order_for_payment_transaction", {})
+        )
+    service_fake = FakeServiceClient()
+    assert not hasattr(service_fake, "query")
+    client = _b1_client(service_fake=service_fake)
+    assert _b1_checkout(client).status_code == 201
+    assert {call[0] for call in service_fake.rpc_calls} <= {
+        "backend_get_gateway_order_for_payment_transaction",
+        "backend_attach_gateway_order",
+    }

@@ -102,3 +102,60 @@ describe("W3 checkout services", () => {
     expect(url).toContain("page=2");
   });
 });
+
+/**
+ * B1 retry contract: a retry re-sends the SAME idempotency
+ * key, the backend re-issues the original gateway order,
+ * and verification still requires the backend call — the
+ * callback alone never confirms payment.
+ */
+describe("B1 checkout retry", () => {
+  it("retry sends the same idempotency key and reuses the returned order id", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/checkout")) {
+        return jsonResponse(201, {
+          order_id: "order-1",
+          payment_transaction_id: "txn-1",
+          key_id: "rzp_test_public",
+          razorpay_order_id: "order_rzp_reused",
+          amount_paise: 19800,
+          currency: "INR",
+          prefill_email: "buyer@example.com",
+        });
+      }
+      return jsonResponse(200, {
+        order_id: "order-1",
+        payment_transaction_id: "txn-1",
+        razorpay_payment_id: "pay_1",
+        verified: true,
+        amount_paise: 19800,
+        currency: "INR",
+      });
+    });
+    const services = createServices(
+      new ApiClient({ baseUrl: "http://localhost:8000", fetchImpl: fetchImpl as unknown as typeof fetch }),
+    );
+    const first = await services.payments.checkout("order-1", "checkout-key-789");
+    const second = await services.payments.checkout("order-1", "checkout-key-789");
+    expect(first.razorpay_order_id).toBe("order_rzp_reused");
+    expect(second.razorpay_order_id).toBe("order_rzp_reused");
+    const keys = fetchImpl.mock.calls
+      .slice(0, 2)
+      .map(
+        ([, init]) =>
+          (init.headers as Record<string, string>)["Idempotency-Key"],
+      );
+    expect(keys).toEqual(["checkout-key-789", "checkout-key-789"]);
+    // Verification still goes through the backend and sends
+    // no idempotency key of its own.
+    await services.payments.verifyPayment({
+      razorpay_order_id: "order_rzp_reused",
+      razorpay_payment_id: "pay_1",
+      razorpay_signature: "sig_1",
+    });
+    const [, verifyInit] = fetchImpl.mock.calls[2] as unknown as [string, RequestInit];
+    expect(
+      (verifyInit.headers as Record<string, string>)["Idempotency-Key"],
+    ).toBeUndefined();
+  });
+});

@@ -830,6 +830,21 @@ conflicts with the already-attached one — the customer is
 not charged, but the original gateway order id cannot be
 re-issued through the API).
 
+B1 note (implemented as a reviewed migration file, not
+applied to live by the PR): checkout retry recovery uses
+a DIFFERENT lookup in the opposite direction —
+`backend_get_gateway_order_for_payment_transaction`
+(transaction id + order id -> attached gateway order id
+and status, service-role only). It does not replace the
+proposal above, which maps a gateway order id back to a
+transaction id for verification/webhooks and remains
+proposed, not applied. A provider order that was created
+but never attached (e.g. a timed-out create call) still
+cannot be recovered, because Razorpay's Orders API
+offers no idempotency key for order creation (receipt is
+only a merchant reference); a retry in that case creates
+and attaches a fresh order.
+
 ### Deployment configuration (manual, by the owner)
 
 Set these in the Render environment (never in source):

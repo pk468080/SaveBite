@@ -83,6 +83,18 @@ only then start the notification worker:
 - `20261101131000_w8_notification_rpc_grants.sql` (W8:
   service-role-only EXECUTE on the two worker RPCs)
 
+## B1 file — NOT applied to live
+
+- `20261101180000_b1_checkout_gateway_lookup.sql` (B1:
+  server-only `backend_get_gateway_order_for_payment_transaction`
+  lookup for checkout retry recovery; service-role-only
+  EXECUTE). This file only records the change. Before
+  relying on checkout retries, verify at apply time with
+  has_function_privilege that only service_role holds
+  EXECUTE on it, and apply it in timestamp order after
+  the W7 and W8 files (which remain pending their own
+  approved process).
+
 Before applying, verify at apply time: the notifications
 type CHECK against live rows, EXECUTE privileges for
 anon / authenticated / service_role on both worker RPCs,

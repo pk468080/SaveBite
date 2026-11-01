@@ -115,3 +115,104 @@ test("same-store guard asks before replacing the cart", async ({ page }) => {
   await expect(page.getByText("Morning Cafe Box")).toBeVisible();
   await expect(page.getByText("Evening Bakery Bag")).toHaveCount(0);
 });
+
+/**
+ * B1 mocked end-to-end checkout retry (NOT a production
+ * payment test). This test MUST live in this file, after
+ * the journey test: Playwright runs one spec file's tests
+ * sequentially in a single worker, but all files share one
+ * stub server, so a retry test in its own file would
+ * create a second order that breaks the journey test's
+ * orders-list assertions. Steps: sign in → reserve →
+ * first modal DISMISSED (not a success) → notice + Pay
+ * button again → retry reuses the same gateway order id
+ * → mock checkout → backend verification → confirmed.
+ *
+ * The stub mirrors the fixed backend contract: a repeated
+ * checkout with the same idempotency key re-issues the
+ * same gateway order id. Dismissal itself is frontend
+ * behaviour: it must never declare success, create a new
+ * reservation, or mint a new idempotency key.
+ */
+test("dismissed modal is not success; retry reopens the same Razorpay order", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  // Override the file-level always-succeed mock for this
+  // test only: the first modal open dismisses, later opens
+  // succeed. Every opened order id is recorded so the test
+  // can prove the retry reopened Checkout with the SAME
+  // order id.
+  await page.addInitScript(() => {
+    const opened: string[] = [];
+    (window as unknown as { __openedRazorpayOrderIds: string[] }).__openedRazorpayOrderIds =
+      opened;
+    class DismissFirstRazorpay {
+      private options: Record<string, unknown>;
+      constructor(options: Record<string, unknown>) {
+        this.options = options;
+        opened.push(String(options.order_id));
+      }
+      open() {
+        if (opened.length === 1) {
+          const modal = this.options.modal as
+            | { ondismiss?: () => void }
+            | undefined;
+          setTimeout(() => modal?.ondismiss?.(), 0);
+          return;
+        }
+        const handler = this.options.handler as (response: {
+          razorpay_order_id: string;
+          razorpay_payment_id: string;
+          razorpay_signature: string;
+        }) => void;
+        setTimeout(() => {
+          handler({
+            razorpay_order_id: String(this.options.order_id),
+            razorpay_payment_id: "pay_mock_1",
+            razorpay_signature: "sig_mock_1",
+          });
+        }, 0);
+      }
+      close() {}
+    }
+    (window as unknown as { Razorpay: typeof DismissFirstRazorpay }).Razorpay =
+      DismissFirstRazorpay;
+  });
+
+  await signIn(page);
+
+  await page.goto(`/marketplace/${LISTING_ID}`);
+  await expect(page.getByText("Evening Bakery Bag").first()).toBeVisible();
+  await page.getByRole("button", { name: "Add to cart" }).click();
+  await expect(page.getByText("Added.")).toBeVisible();
+
+  await page.goto("/cart");
+  await page.getByRole("button", { name: "Continue to checkout" }).click();
+  await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible();
+
+  // First attempt: modal dismissed. No success, no new
+  // reservation — the page reports "not completed" and
+  // offers the Pay button again.
+  await page.getByRole("button", { name: "Pay with Razorpay" }).click();
+  await expect(page.getByText(/Payment was not completed/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Pay with Razorpay" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Payment confirmed" }),
+  ).toHaveCount(0);
+
+  // Retry: same tab, same idempotency key, same gateway
+  // order id — then a completed mock checkout verifies
+  // through the backend and only then shows success.
+  await page.getByRole("button", { name: "Pay with Razorpay" }).click();
+  await expect(page.getByRole("heading", { name: "Payment confirmed" })).toBeVisible();
+
+  const opened = await page.evaluate(
+    () =>
+      (window as unknown as { __openedRazorpayOrderIds: string[] })
+        .__openedRazorpayOrderIds,
+  );
+  expect(opened).toEqual(["order_mock_1", "order_mock_1"]);
+});

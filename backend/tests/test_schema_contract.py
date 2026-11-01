@@ -72,9 +72,11 @@ def test_no_new_migration_created_for_this_correction():
     # production migration. The only other files allowed here
     # are the W7 notification migrations, which the W7 brief
     # explicitly authorises as version-controlled files (not
-    # applied to live by the PR), and the two W8 files that
+    # applied to live by the PR), the two W8 files that
     # fix W7 gaps found in audit (per-recipient dedup keys
-    # and service-role-only RPC grants), also files only.
+    # and service-role-only RPC grants), also files only,
+    # and the B1 checkout-lookup migration, also a file
+    # only (not applied to live by the PR).
     # Any further migration must extend this list
     # deliberately, not slip in unnoticed.
     assert migration_files == [
@@ -84,6 +86,7 @@ def test_no_new_migration_created_for_this_correction():
         "20261101122000_w7_notification_delivery.sql",
         "20261101130000_w8_notification_dedup_per_recipient.sql",
         "20261101131000_w8_notification_rpc_grants.sql",
+        "20261101180000_b1_checkout_gateway_lookup.sql",
     ], f"unexpected migration files: {migration_files}"
     assert "DO NOT APPLY THIS FILE TO THE LIVE PROJECT" in BASELINE.read_text()
 

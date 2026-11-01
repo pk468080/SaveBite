@@ -45,6 +45,8 @@ def test_allowlist_contents_match_database_contract():
         # W7: notification worker RPCs (standalone worker only).
         "backend_process_notification_outbox",
         "backend_enqueue_pickup_reminders",
+        # B1: checkout retry lookup (checkout router only).
+        "backend_get_gateway_order_for_payment_transaction",
     }
 
 

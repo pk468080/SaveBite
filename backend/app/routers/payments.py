@@ -10,12 +10,26 @@ Payment lifecycle, from the verified database contracts:
    idempotency key is unique across payment transactions: the
    same key for the same order reuses the transaction; the
    same key for another order is a conflict.
-3. The backend creates a Razorpay order for exactly that
-   amount (rupees -> paise, Decimal, never float) and attaches
-   the Razorpay order id with the server-only RPC
+3. The backend looks up any already-attached Razorpay order
+   for that transaction with the server-only RPC
+   backend_get_gateway_order_for_payment_transaction (B1:
+   transaction + order must match, gateway must be razorpay;
+   it returns only the gateway order id and the transaction
+   status, no secrets or signatures). If an order is already
+   attached and the transaction is still created, that order
+   is re-issued — no second Razorpay order is created. If
+   the transaction is in any non-attachable state (captured,
+   failed, reconciliation-required, refunded), checkout
+   fails before creating anything. Otherwise the backend
+   creates a Razorpay order for exactly that amount (rupees
+   -> paise, Decimal, never float) and attaches the Razorpay
+   order id with the server-only RPC
    backend_attach_gateway_order (requires status created;
    re-attaching the SAME gateway order id is allowed, a
-   different one is a conflict).
+   different one is a conflict). If the attach loses a race
+   to another request's attach, the router re-reads the
+   lookup and returns the winning order, never the loser's
+   unattached one.
 4. Confirmation happens ONLY after independent verification:
    checkout signature verified against the order id fetched
    from Razorpay's own API, provider payment fetched
@@ -36,11 +50,12 @@ Payment lifecycle, from the verified database contracts:
    payment, and the webhook handler treats that refusal as
    "already captured", not as an error to retry forever.
 
-MISSING CAPABILITY, documented not worked around: there is
-no approved RPC that maps a Razorpay gateway order id back
-to a payment transaction id, and the service-role client may
-not query tables (private tables are rejected outright).
-So the gateway-order -> transaction mapping is resolved
+RELATED CAPABILITY, still documented not worked around:
+there is no approved RPC that maps a Razorpay gateway order
+id back to a payment transaction id for verification /
+webhooks, and the service-role client may not query tables
+(private tables are rejected outright). So the
+gateway-order -> transaction mapping is still resolved
 through Razorpay's own records: the Razorpay order is
 created with notes savebite_payment_transaction_id and
 savebite_order_id, and verification/webhook fetch the
@@ -49,17 +64,17 @@ notes are absent, the handler does NOT confirm — it
 fail-closes and reports the mapping as missing. The clean
 fix is a proposed lookup RPC (see docs/architecture.md);
 it is NOT applied here, and no private table is queried
-directly to work around it.
-
-Also a genuine limitation from the same gap: if a checkout
-response is lost after a successful attach, a repeat checkout
-with the same idempotency key creates a new Razorpay order
-and the attach conflicts (different gateway order id), so
-the API returns 422 instead of re-issuing the original
-gateway order id. The customer is not charged by the
-orphaned Razorpay order (it is unpaid), but recovery of the
-original checkout needs the proposed lookup RPC. This is
-documented, not hidden.
+directly to work around it. That proposal is a different
+direction from the B1 checkout lookup (transaction + order
+-> attached gateway order id), which DOES exist as a
+reviewed migration file; it recovers a lost checkout
+response after a successful attach, as described in step 3
+above. An order that was created at Razorpay but never
+attached (for example a create call that timed out) still
+cannot be recovered — Razorpay's Orders API offers no
+idempotency key for order creation — so a retry in that
+case creates and attaches a fresh order, and the orphaned,
+unpaid provider order charges nobody.
 """
 
 from __future__ import annotations
@@ -149,6 +164,55 @@ def _transaction_id_from_order_notes(order: dict) -> UUID | None:
         return None
 
 
+def _build_checkout_response(
+    order_id: UUID,
+    transaction_id: str,
+    key_id: str,
+    gateway_order_id: str,
+    amount_paise: int,
+    currency: str,
+    prefill_email: str | None,
+) -> CheckoutResponse:
+    return CheckoutResponse(
+        order_id=order_id,
+        payment_transaction_id=UUID(transaction_id),
+        key_id=key_id,
+        razorpay_order_id=gateway_order_id,
+        amount_paise=amount_paise,
+        currency=currency,
+        prefill_email=prefill_email,
+    )
+
+
+async def _attached_gateway_order(
+    service_client: SupabaseRestClient,
+    transaction_id: str,
+    order_id: UUID,
+) -> dict:
+    """Authoritative attached-order lookup for one transaction.
+
+    Calls the server-only RPC
+    backend_get_gateway_order_for_payment_transaction. Any
+    failure is translated to an API error, so a lookup outage
+    fails closed instead of letting checkout proceed to
+    create a second Razorpay order. A non-dict reply is
+    treated as a failed checkout start, never as an empty
+    attachment."""
+    try:
+        attached = await service_client.rpc(
+            "backend_get_gateway_order_for_payment_transaction",
+            {
+                "p_payment_transaction_id": transaction_id,
+                "p_order_id": str(order_id),
+            },
+        )
+    except Exception as exc:
+        raise translate_upstream_error(exc) from exc
+    if not isinstance(attached, dict):
+        raise BadGatewayError("Checkout could not be started")
+    return attached
+
+
 @router.post(
     "/v1/orders/{order_id}/checkout",
     response_model=CheckoutResponse,
@@ -168,6 +232,7 @@ async def create_checkout(
     Uses the caller's user-context client for
     begin_payment_checkout (ownership and eligibility are the
     database's checks) and the service-role client ONLY for
+    backend_get_gateway_order_for_payment_transaction and
     backend_attach_gateway_order. The amount comes from the
     database, never from the request body — the frontend
     cannot choose or modify it."""
@@ -190,14 +255,59 @@ async def create_checkout(
         raise BadGatewayError("Checkout returned an invalid amount") from exc
     amount_paise = rupees_to_paise(amount)
     transaction_id = str(checkout["payment_transaction_id"])
-    # Razorpay order creation. A timeout here is ambiguous: the
-    # order may or may not have been created at Razorpay. This
-    # endpoint does NOT retry automatically, because a retry
-    # would create a second Razorpay order. The client retries
-    # with the same idempotency key; begin_payment_checkout
-    # returns the same transaction, and the new Razorpay order
-    # is attached instead. An orphaned, unpaid Razorpay order
-    # charges nobody.
+    # B1: checkout retry recovery. begin_payment_checkout
+    # reuses the transaction by idempotency key but returns no
+    # gateway order id, so a retry used to create a second
+    # Razorpay order and die on gateway_order_id_conflict
+    # (HTTP 422) whenever the first order had already been
+    # attached (lost response, or modal dismissed and retried
+    # with the same key). Look the attachment up FIRST
+    # through the server-only RPC: it reads only this
+    # transaction for this order and returns no secrets or
+    # signatures. If the lookup itself is unavailable, fail
+    # closed here — never create another Razorpay order when
+    # the existing attachment state is unknown.
+    attached = await _attached_gateway_order(service_client, transaction_id, order_id)
+    existing_order_id = attached.get("gateway_order_id")
+    existing_status = attached.get("status")
+    if existing_order_id and existing_status == "created":
+        # The original checkout already attached an order and
+        # it is still payable: re-issue it instead of creating
+        # a second one. Amount, currency, and key id come from
+        # the same database values as a first checkout, so the
+        # response is identical in shape to the original.
+        return _build_checkout_response(
+            order_id,
+            transaction_id,
+            settings.razorpay_key_id,
+            str(existing_order_id),
+            amount_paise,
+            currency,
+            user.email,
+        )
+    if existing_status != "created":
+        # Captured, failed, reconciliation-required, refunded,
+        # or any other non-attachable state: do NOT create a
+        # new Razorpay order for this transaction. A failed
+        # payment needs a fresh transaction (a new idempotency
+        # key — a new tab, since the key is session-scoped per
+        # order), exactly as the database contract already
+        # required at attach time; this only fails earlier,
+        # before an orphan provider order is created.
+        raise ApiError(422, "VALIDATION_ERROR", "payment_transaction_not_attachable")
+    # No gateway order attached yet and the transaction is
+    # attachable: create exactly one Razorpay order. A timeout
+    # here is ambiguous: the order may or may not have been
+    # created at Razorpay. This endpoint does NOT retry the
+    # create call automatically — Razorpay's Orders API offers
+    # no idempotency key for order creation (receipt is only a
+    # merchant reference), so a retry could not prove it was
+    # not creating a second order. The client retries with the
+    # same idempotency key; if the timed-out create never
+    # attached anything, the retry creates and attaches a
+    # fresh order, and the orphaned, unpaid provider order
+    # charges nobody. Only an ATTACHED order is recoverable,
+    # and the lookup above is what recovers it.
     razorpay_order = await razorpay.create_order(
         amount_paise,
         currency,
@@ -225,15 +335,48 @@ async def create_checkout(
             },
         )
     except Exception as exc:
-        raise translate_upstream_error(exc) from exc
-    return CheckoutResponse(
-        order_id=order_id,
-        payment_transaction_id=UUID(transaction_id),
-        key_id=settings.razorpay_key_id,
-        razorpay_order_id=gateway_order_id,
-        amount_paise=amount_paise,
-        currency=currency,
-        prefill_email=user.email,
+        translated = translate_upstream_error(exc)
+        if (
+            translated.status_code == 422
+            and translated.code == "VALIDATION_ERROR"
+            and translated.message == "gateway_order_id_conflict"
+        ):
+            # Lost race: another request attached a different
+            # gateway order between our lookup and this attach
+            # (attach holds the row FOR UPDATE, so at most one
+            # attach wins). Re-read the authoritative state and
+            # return the winner — never the loser's unattached
+            # order, and never a bare 422 when a valid order now
+            # exists. Only a confirmed attached + created order
+            # recovers; any other outcome, including a failed
+            # re-lookup, keeps the original conflict error.
+            try:
+                winner = await _attached_gateway_order(
+                    service_client, transaction_id, order_id
+                )
+            except Exception:
+                raise translated from exc
+            winner_order_id = winner.get("gateway_order_id")
+            if winner_order_id and winner.get("status") == "created":
+                return _build_checkout_response(
+                    order_id,
+                    transaction_id,
+                    settings.razorpay_key_id,
+                    str(winner_order_id),
+                    amount_paise,
+                    currency,
+                    user.email,
+                )
+            raise translated from exc
+        raise translated from exc
+    return _build_checkout_response(
+        order_id,
+        transaction_id,
+        settings.razorpay_key_id,
+        gateway_order_id,
+        amount_paise,
+        currency,
+        user.email,
     )
 
 
