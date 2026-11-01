@@ -133,6 +133,12 @@ const SESSION = {
   user: USER,
 };
 const orders = new Map();
+
+// B1 emulation: the fixed backend re-issues the same
+// gateway order id for a repeated checkout with the same
+// idempotency key. The stub mirrors that contract so the
+// retry spec tests the frontend path, not the backend.
+const checkoutOrderByKey = new Map();
 const pickupTokens = new Map();
 let pickupTokenSeq = 1;
 const LEGACY_PICKUP_TOKEN = "d".repeat(64);
@@ -335,13 +341,21 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: { code: "VALIDATION_ERROR", message: "Idempotency-Key header is required", request_id: "e2e" } }));
       return;
     }
+    // B1: same order + same key re-issues the same gateway
+    // order id instead of minting a second one.
+    const reuseKey = `${orderId}:${req.headers["idempotency-key"]}`;
+    let rzpOrderId = checkoutOrderByKey.get(reuseKey);
+    if (!rzpOrderId) {
+      rzpOrderId = "order_mock_1";
+      checkoutOrderByKey.set(reuseKey, rzpOrderId);
+    }
     res.writeHead(201);
     res.end(
       JSON.stringify({
         order_id: order.id,
         payment_transaction_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         key_id: "rzp_test_mock",
-        razorpay_order_id: "order_mock_1",
+        razorpay_order_id: rzpOrderId,
         amount_paise: Math.round(Number(order.total_amount) * 100),
         currency: "INR",
         prefill_email: USER.email,

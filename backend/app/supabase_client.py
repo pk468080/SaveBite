@@ -52,6 +52,11 @@ USER_CONTEXT_RPCS = frozenset(
 BACKEND_RPCS = frozenset(
     {
         "backend_attach_gateway_order",
+        # B1: checkout retry lookup — returns the already-attached
+        # gateway order id (if any) plus status for one transaction
+        # of one order. Called by the checkout router only, before
+        # any Razorpay order is created.
+        "backend_get_gateway_order_for_payment_transaction",
         "backend_mark_payment_failed",
         "backend_confirm_payment_capture",
         "backend_record_payment_webhook_event",
