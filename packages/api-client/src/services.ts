@@ -10,7 +10,18 @@
 
 import type { ApiClient, RequestOptions } from "./client";
 import type {
+  AdminActivityEvent,
   AdminDashboard,
+  AdminMerchantDetail,
+  AdminMerchantReviewResponse,
+  AdminMerchantSummary,
+  AdminOrderDetail,
+  AdminOrderSummary,
+  AdminPaymentException,
+  AdminReviewRow,
+  AdminStoreDetail,
+  AdminStoreReviewResponse,
+  AdminStoreSummary,
   CheckoutResponse,
   CurrentUser,
   InventoryAvailability,
@@ -275,23 +286,29 @@ export const listingsService = (client: ApiClient) => ({
 export const adminService = (client: ApiClient) => ({
   getDashboard: () => client.get<AdminDashboard>("/v1/admin/dashboard"),
   listMerchants: (params: { status?: string; verification_status?: string; search?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<MerchantSummary>>(`/v1/admin/merchants${query(params)}`),
+    client.get<Page<AdminMerchantSummary>>(`/v1/admin/merchants${query(params)}`),
+  getMerchantDetail: (id: string) =>
+    client.get<AdminMerchantDetail>(`/v1/admin/merchants/${id}`),
   reviewMerchant: (id: string, body: { action: "approve" | "reject"; review_notes?: string }) =>
-    client.post(`/v1/admin/merchants/${id}/review`, body),
+    client.post<AdminMerchantReviewResponse>(`/v1/admin/merchants/${id}/review`, body),
   listStores: (params: { merchant_id?: string; status?: string; city?: string; pincode?: string; search?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<StoreSummary>>(`/v1/admin/stores${query(params)}`),
+    client.get<Page<AdminStoreSummary>>(`/v1/admin/stores${query(params)}`),
+  getStoreDetail: (id: string) =>
+    client.get<AdminStoreDetail>(`/v1/admin/stores/${id}`),
   reviewStore: (id: string, body: { activate: boolean; reason?: string }) =>
-    client.post(`/v1/admin/stores/${id}/review`, body),
+    client.post<AdminStoreReviewResponse>(`/v1/admin/stores/${id}/review`, body),
   listOrders: (params: { order_number?: string; status?: string; payment_status?: string; store_id?: string; merchant_id?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<OrderSummary>>(`/v1/admin/orders${query(params)}`),
+    client.get<Page<AdminOrderSummary>>(`/v1/admin/orders${query(params)}`),
+  getOrderDetail: (id: string) =>
+    client.get<AdminOrderDetail>(`/v1/admin/orders/${id}`),
   listPayments: (params: { payment_status?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<OrderSummary>>(`/v1/admin/payments${query(params)}`),
+    client.get<Page<AdminPaymentException>>(`/v1/admin/payments${query(params)}`),
   listRefunds: (params: { page?: number; page_size?: number } = {}) =>
-    client.get<Page<OrderSummary>>(`/v1/admin/refunds${query(params)}`),
+    client.get<Page<AdminPaymentException>>(`/v1/admin/refunds${query(params)}`),
   listReviews: (params: { store_id?: string; rating?: number; moderation_status?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<ReviewResponse>>(`/v1/admin/reviews${query(params)}`),
+    client.get<Page<AdminReviewRow>>(`/v1/admin/reviews${query(params)}`),
   listActivity: (params: { order_number?: string; store_id?: string; page?: number; page_size?: number } = {}) =>
-    client.get<Page<unknown>>(`/v1/admin/activity${query(params)}`),
+    client.get<Page<AdminActivityEvent>>(`/v1/admin/activity${query(params)}`),
 });
 
 /** In-app notifications (M12). Reads and read-state only;

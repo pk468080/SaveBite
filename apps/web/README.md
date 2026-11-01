@@ -429,6 +429,123 @@ every load and never treated as proof of access.
   backend change, or live Supabase change was
   made in W5.
 
+## Admin portal: implementation map (verified, W6, M11)
+
+The W1 admin shell already had a server-side
+gate (GET /v1/admin/dashboard; 401/403 redirect
+to /unauthorized) plus sidebar navigation, the
+signed-in user's email, and sign-out. W6 fills
+the placeholder pages with real functionality.
+Every permission check stays in the backend:
+the gate admits only operations_admin and
+super_admin, because the platform_user_roles
+SELECT policy lets only those two roles read
+the role table. support_agent, finance_admin,
+and compliance_admin exist as role names in the
+database but are denied by the gate until a
+backend fix (own-row read policy or a
+verification RPC) is approved — the portal
+never grants them access, never lets a user
+pick a role, and never treats a client-side
+role value as proof. Client pages also handle
+401/403 from any admin request as access
+denied, once, without retrying.
+
+What the backend actually supports (and W6
+builds, nothing more):
+
+- `/admin` — platform overview from GET
+  /v1/admin/dashboard: merchant/store/listing/
+  order counts, captured payment count, captured
+  order value, failed/pending/reconciliation/
+  refund-pending counts, visible-review count
+  and average, recent orders (5). Captured
+  order value is the sum of captured payments
+  only and is labelled exactly that — never
+  earnings, payouts, revenue, or profit. There
+  is no customer count (profiles are readable
+  only by their owner), so none is shown or
+  estimated. Refresh re-reads; no polling.
+- `/admin/merchants` — list with server-side
+  status, verification-status, and display-name
+  search filters (search covers display_name
+  only, per the backend) plus pagination.
+- `/admin/merchants/[id]` — detail from GET
+  /v1/admin/merchants/{id} (application fields
+  plus the merchant's stores) and the decision
+  panel: approve or reject via POST
+  /v1/admin/merchants/{id}/review, with a
+  confirmation step, duplicate-submission
+  guard, and a detail refetch after success —
+  never an optimistic local status. Approval
+  requires verification status verified plus a
+  verified, current FSSAI document, both
+  enforced by the backend RPC; a failed
+  approval shows the backend's reason.
+- `/admin/stores` — list with server-side
+  status, city, pincode, and store-name search
+  filters plus pagination.
+- `/admin/stores/[id]` — detail from GET
+  /v1/admin/stores/{id} (address, timezone,
+  hours as weekday numbers — the backend never
+  confirms whether weekday 0 is Monday or
+  Sunday, so no day names are guessed — plus
+  listing/order counts) and the activation
+  panel: activate or deactivate via POST
+  /v1/admin/stores/{id}/review, with the same
+  confirmation, duplicate guard, and refetch.
+  Activation requires an approved and verified
+  merchant, a store location, and store hours,
+  all enforced by the backend RPC.
+- `/admin/orders` — read-only list with
+  server-side order-number, order-status, and
+  payment-status filters plus pagination.
+- `/admin/orders/[id]` — read-only detail:
+  items, pickup window, collected time,
+  customer note when returned, and the recorded
+  status timeline. No customer personal data is
+  returned by this endpoint, so none is shown.
+- `/admin/payments` — two read-only tabs:
+  payment exceptions (GET /v1/admin/payments,
+  order-level only — no gateway ids,
+  signatures, or provider payloads) and refunds
+  (GET /v1/admin/refunds, refund-related orders
+  only; refund-pending is NOT refunded, and no
+  refund amount is estimated beyond the order
+  total). No refund execution exists, so no
+  refund button is shown.
+- `/admin/reviews` — READ-ONLY list with
+  rating and moderation-status filters. There
+  is NO review moderation endpoint and NO
+  moderation RPC in the backend: reviews are
+  immutable through the API, and the reviews
+  SELECT policy hides hidden and under_review
+  rows from platform admins, so this list shows
+  visible reviews in practice. No hide, restore,
+  edit, or delete action is offered — inventing
+  one would be a fake. Moderation needs a
+  separate backend change (a moderation RPC
+  plus a policy letting administrators see
+  non-visible rows).
+- `/admin/activity` — recorded
+  order_status_events only (GET
+  /v1/admin/activity, order-number search).
+  Private audit logs, pickup events, and
+  webhook events are not exposed by the API
+  and no audit-log screen is fabricated.
+
+Deliberately NOT built in W6 (no supporting
+endpoint exists): review moderation actions,
+role or user management, order status changes,
+refund or payout execution, store suspension
+beyond activate/deactivate, listing management
+actions (GET /v1/admin/listings is read-only
+and has no page in W6), audit-log viewing,
+and any access for support, finance, or
+compliance roles. No migration, RLS change,
+backend change, or live Supabase change was
+made in W6.
+
 ## Known limitations (W4)
 
 - No merchant-facing document-upload endpoint
@@ -692,6 +809,38 @@ from retries.
   mocked token from the stub issuance response
   (the way a merchant learns it by scanning);
   no real camera hardware is used.
+- `packages/api-client/tests/admin-services.test.ts`:
+  W6 admin service contracts (dashboard URL,
+  merchant/store list filters and pagination,
+  merchant review body, store review body,
+  order/payment/refund/review/activity
+  endpoints).
+- `apps/web/tests/admin.test.ts` +
+  `tests/admin-dashboard.test.tsx` +
+  `tests/admin-review-panel.test.tsx` +
+  `tests/admin-reviews.test.tsx`: W6 admin
+  labels, dashboard rendering (real backend
+  fields, captured value never labelled as
+  earnings or revenue, refresh re-reads, 403
+  shows access denied once without retry,
+  backend failure shows an error not an empty
+  dashboard), review panels (confirmation
+  before acting, one API call per decision,
+  duplicate submissions blocked, failure leaves
+  the shown status untouched, success asks the
+  parent to re-read), and the reviews page
+  (visible row renders, no moderation buttons
+  exist).
+- `apps/web/e2e/admin.spec.ts`: W6 mocked admin
+  journey (sign-in, dashboard counts and honest
+  captured-value labelling, merchant list to
+  detail to approve with confirmation and
+  backend refetch, store list to detail to
+  activate, order list to detail, payments and
+  refunds tabs, reviews read-only, activity
+  events) plus the standalone access-denied
+  page. Real role authorization is enforced by
+  the backend gate, not by these mocks.
 - `apps/web/e2e/`: Playwright specs against
   `e2e/stub-api.mjs` (fixed fixture responses in the
   real API shapes, port 8000) plus the Next dev
