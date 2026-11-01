@@ -7,6 +7,10 @@ PostgREST health and reports whether Supabase and the service-role
 key are configured (booleans only, never keys). A failed check
 raises ServiceUnavailableError, which becomes HTTP 503 with the
 standard error envelope, not a 200.
+Both checks send the publishable key as the apikey header: the
+Supabase gateway rejects keyless /auth/v1/* requests with 401
+("No API key found in request"), verified live 2026-11-01, so a
+keyless auth check could never return 200 against hosted Supabase.
 """
 
 from __future__ import annotations
@@ -21,10 +25,16 @@ from app.schemas import HealthResponse, ReadinessResponse
 router = APIRouter()
 
 
-async def check_supabase_auth_health(supabase_url: str) -> bool:
+async def check_supabase_auth_health(supabase_url: str, publishable_key: str) -> bool:
+    """Check Auth availability. The apikey header is required: the
+    Supabase gateway rejects keyless /auth/v1/* requests with 401,
+    so a keyless probe can never report healthy."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{supabase_url}/auth/v1/health")
+            response = await client.get(
+                f"{supabase_url}/auth/v1/health",
+                headers={"apikey": publishable_key},
+            )
         return response.status_code == 200
     except httpx.HTTPError:
         return False
@@ -67,7 +77,9 @@ async def readiness(settings: Settings = Depends(get_settings)) -> ReadinessResp
         checks["supabase_auth"] = "skipped"
         checks["postgrest"] = "skipped"
         raise ServiceUnavailableError("Supabase is not configured")
-    auth_ok = await check_supabase_auth_health(settings.supabase_url)
+    auth_ok = await check_supabase_auth_health(
+        settings.supabase_url, settings.supabase_publishable_key
+    )
     checks["supabase_auth"] = "ok" if auth_ok else "unreachable"
     postgrest_ok = await check_supabase_postgrest_health(
         settings.supabase_url, settings.supabase_publishable_key
