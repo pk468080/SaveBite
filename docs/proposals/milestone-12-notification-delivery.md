@@ -1,5 +1,26 @@
 # PROPOSAL — NOT APPLIED — REQUIRES EXPLICIT APPROVAL
 
+> W7 UPDATE (2026-11-01): this proposal is SUPERSEDED by the
+> W7 implementation, which the user approved as a milestone
+> brief. W7 keeps the proposal's core (dedup_key + partial
+> unique index, catalogue CHECK, preferences table, 15-minute
+> or continuous worker) but changes the delivery design in
+> three deliberate ways: (1) generation moved from a
+> post-commit API call to database triggers that enqueue
+> into private.notification_outbox in the SAME transaction
+> as the business change, closing the crash-between-commit-
+> and-emission loss window the proposal acknowledged;
+> (2) preferences are typed boolean columns (with a database
+> CHECK for mandatory categories) instead of a jsonb blob;
+> (3) the worker is a standalone process calling
+> backend_process_notification_outbox +
+> backend_enqueue_pickup_reminders, rather than a cron-only
+> design. The migrations live in supabase/migrations/
+> (20261101120000, 20261101121000, 20261101122000) and are
+> still NOT applied to live by the W7 PR. This document is
+> kept as the audit record; do not apply it — apply the W7
+> migrations instead, through the normal review process.
+
 # Milestone 12: notification delivery infrastructure
 
 Status: this document is a REVIEW PROPOSAL ONLY. Nothing

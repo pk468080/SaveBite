@@ -42,6 +42,9 @@ def test_allowlist_contents_match_database_contract():
         "backend_update_refund_status",
         "backend_post_ledger_transaction",
         "backend_reverse_ledger_transaction",
+        # W7: notification worker RPCs (standalone worker only).
+        "backend_process_notification_outbox",
+        "backend_enqueue_pickup_reminders",
     }
 
 

@@ -4,19 +4,19 @@ import { ApiError, createServices } from "@savebite/api-client";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { NotificationPreferencesSection } from "@/components/shared/notification-preferences";
 import { Alert, EmptyState, LoadingState } from "@/components/ui/states";
 import { createBrowserApiClient } from "@/lib/api/browser";
 import { formatDateTime } from "@/lib/order-labels";
 import type { NotificationItem } from "@savebite/api-client";
 
 /**
- * Customer notifications (W3, M12 read APIs only).
- * Generation is not active and preferences are NOT
- * persisted (PATCH returns 501), so this page shows
- * only real records and offers no preferences form —
- * a form here would imply settings save, which they
- * do not. Mark-read actions are scoped to the caller
- * by the backend.
+ * Customer notifications (W3, M12 read APIs, W7 delivery +
+ * preferences). Notifications are created server-side by
+ * database triggers and delivered by the worker; this page
+ * shows only real records. Preferences below are persisted
+ * through the API. Mark-read actions are scoped to the
+ * caller by the backend.
  */
 export default function CustomerNotificationsPage() {
   const [items, setItems] = useState<NotificationItem[] | null>(null);
@@ -124,6 +124,31 @@ export default function CustomerNotificationsPage() {
           ))}
         </div>
       )}
+
+      <NotificationPreferencesSection
+        categories={[
+          {
+            key: "order_updates",
+            label: "Order updates",
+            description: "General updates about your orders.",
+          },
+          {
+            key: "payment_updates",
+            label: "Payment updates",
+            description: "Payment results for your orders.",
+          },
+          {
+            key: "pickup_reminders",
+            label: "Pickup reminders",
+            description: "A reminder before your pickup window starts.",
+          },
+          {
+            key: "collection_confirmation",
+            label: "Collection confirmations",
+            description: "Confirmation when your order is collected.",
+          },
+        ]}
+      />
     </div>
   );
 }

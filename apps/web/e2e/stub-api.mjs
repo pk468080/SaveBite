@@ -153,6 +153,19 @@ const notifications = [
   },
 ];
 
+// W7: in-memory notification preferences for the stub user.
+const notificationPreferences = {
+  order_updates: true,
+  payment_updates: true,
+  pickup_reminders: true,
+  collection_confirmation: true,
+  new_paid_orders: true,
+  pickup_updates: true,
+  application_updates: true,
+  operational_alerts: true,
+};
+let notificationPreferencesPersisted = false;
+
 function orderDetail(order) {
   return {
     id: order.id,
@@ -243,6 +256,10 @@ const server = createServer(async (req, res) => {
   // header (including supabase-js x-supabase-api-version
   // and the Idempotency-Key) is fine here.
   res.setHeader("Access-Control-Allow-Headers", "*");
+  // Wildcard methods: without this, the browser blocks
+  // non-safelisted methods (PUT, PATCH, DELETE) at the
+  // preflight stage even though GET/POST pass.
+  res.setHeader("Access-Control-Allow-Methods", "*");
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
@@ -403,6 +420,69 @@ const server = createServer(async (req, res) => {
     });
     res.end(JSON.stringify({ updated_count: count }));
     return;
+  }
+  // W7: notification preferences. The stub keeps one in-memory
+  // row, mirroring the API contract: GET returns defaults
+  // until the first PATCH persists, and PATCH validates the
+  // same rules as the backend (unknown categories and
+  // disabling mandatory categories are rejected).
+  if (url.pathname === "/v1/notifications/preferences") {
+    if (req.method === "GET") {
+      res.end(
+        JSON.stringify({
+          preferences: { ...notificationPreferences },
+          mandatory_categories: ["operational_alerts", "payment_updates"],
+          persisted: notificationPreferencesPersisted,
+        }),
+      );
+      return;
+    }
+    if (req.method === "PATCH") {
+      const body = await readBody(req);
+      const updates = body.preferences || {};
+      const known = Object.keys(notificationPreferences);
+      for (const key of Object.keys(updates)) {
+        if (!known.includes(key)) {
+          res.writeHead(422);
+          res.end(
+            JSON.stringify({
+              error: {
+                code: "VALIDATION_ERROR",
+                message: `Unknown preference category: ${key}`,
+                request_id: "e2e",
+              },
+            }),
+          );
+          return;
+        }
+        if (
+          (key === "payment_updates" || key === "operational_alerts") &&
+          updates[key] === false
+        ) {
+          res.writeHead(422);
+          res.end(
+            JSON.stringify({
+              error: {
+                code: "VALIDATION_ERROR",
+                message: `Preference category cannot be disabled: ${key}`,
+                request_id: "e2e",
+              },
+            }),
+          );
+          return;
+        }
+      }
+      Object.assign(notificationPreferences, updates);
+      notificationPreferencesPersisted = true;
+      res.end(
+        JSON.stringify({
+          preferences: { ...notificationPreferences },
+          mandatory_categories: ["operational_alerts", "payment_updates"],
+          persisted: true,
+        }),
+      );
+      return;
+    }
   }
   if (url.pathname === "/v1/marketplace/categories") {
     res.end(JSON.stringify(categories));

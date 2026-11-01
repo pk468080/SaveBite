@@ -4,19 +4,18 @@ import { ApiError, createServices } from "@savebite/api-client";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { NotificationPreferencesSection } from "@/components/shared/notification-preferences";
 import { Alert, EmptyState, LoadingState } from "@/components/ui/states";
 import { createBrowserApiClient } from "@/lib/api/browser";
 import { formatDateTime } from "@/lib/order-labels";
 import type { NotificationItem } from "@savebite/api-client";
 
 /**
- * Merchant notifications (W4, M12 read APIs
- * only). Generation is not active yet, so this
- * page shows only records that exist — no mock
- * merchant alerts, and no claim that alerts will
- * arrive automatically. Preferences are NOT
- * persisted (PATCH returns 501), so no
- * preferences form is offered here either.
+ * Merchant notifications (W4, M12 read APIs, W7 delivery +
+ * preferences). Notifications are created server-side by
+ * database triggers and delivered by the worker; this page
+ * shows only records that exist. Preferences below are
+ * persisted through the API.
  */
 export default function MerchantNotificationsPage() {
   const [items, setItems] = useState<NotificationItem[] | null>(null);
@@ -77,8 +76,7 @@ export default function MerchantNotificationsPage() {
           <h1 className="text-2xl font-bold">Notifications</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {unread > 0 ? `${unread} unread` : "All caught up"} · Only notifications that actually
-            exist are shown. Notification generation is not active yet, so do not expect automatic
-            alerts until the platform enables delivery.
+            exist are shown.
           </p>
         </div>
         <div className="flex gap-2">
@@ -122,6 +120,26 @@ export default function MerchantNotificationsPage() {
           ))}
         </div>
       )}
+
+      <NotificationPreferencesSection
+        categories={[
+          {
+            key: "new_paid_orders",
+            label: "New paid orders",
+            description: "Alert when a customer pays for an order at your store.",
+          },
+          {
+            key: "pickup_updates",
+            label: "Pickup updates",
+            description: "Alert when an order is collected at your store.",
+          },
+          {
+            key: "application_updates",
+            label: "Application updates",
+            description: "Updates about your merchant application and stores.",
+          },
+        ]}
+      />
     </div>
   );
 }

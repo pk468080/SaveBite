@@ -1,13 +1,14 @@
-"""Milestone 12 tests: in-app notification reads, read state,
-preferences defaults/validation, and the central service.
+"""W7 tests: in-app notification reads, read state,
+preferences persistence, worker driving, migration
+consistency, and the central service.
 
 All Supabase access is faked. No test touches live
 Supabase, queries a private table, or uses the
 service-role client. Generation is NOT tested through
-HTTP because no live generation path exists (see
-app/notifications.py); the service functions are unit
-tested for catalogue, dedup, recipients, and reminder
-eligibility.
+HTTP because it happens in database triggers (see
+supabase/migrations/20261101122000_w7_notification_
+delivery.sql); the migration-consistency tests below
+check the trigger and processor definitions instead.
 """
 
 from datetime import UTC, datetime
@@ -108,6 +109,12 @@ class NotifFake:
                 existing.update(row)
                 updated.append(dict(existing))
         return updated
+
+    async def insert(self, table, row):
+        assert not table.startswith("private."), "private tables must not be written"
+        stored = dict(row)
+        self.tables.setdefault(table, []).append(stored)
+        return [dict(stored)]
 
 
 def _tables(notifications=None):
@@ -242,14 +249,80 @@ def test_preferences_defaults_and_validation():
         ).status_code
         == 422
     )
-    # A valid update is validated but honestly reports
-    # that storage is not configured yet.
-    assert (
-        client.patch(
-            "/v1/notifications/preferences",
-            json={"preferences": {"pickup_reminders": False}},
-        ).status_code
-        == 501
+
+
+def _prefs_row(user_id, **overrides):
+    row = {
+        "user_id": str(user_id),
+        "order_updates": True,
+        "payment_updates": True,
+        "pickup_reminders": True,
+        "collection_confirmation": True,
+        "new_paid_orders": True,
+        "pickup_updates": True,
+        "application_updates": True,
+        "operational_alerts": True,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_preferences_patch_persists_and_get_reads_it_back():
+    tables = _tables()
+    fake = NotifFake(tables)
+    client = _client_with(fake)
+    response = client.patch(
+        "/v1/notifications/preferences",
+        json={"preferences": {"pickup_reminders": False}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] is True
+    assert body["preferences"]["pickup_reminders"] is False
+    # Unmentioned categories keep their defaults.
+    assert body["preferences"]["order_updates"] is True
+    # A later GET returns the stored row, not defaults.
+    reread = client.get("/v1/notifications/preferences").json()
+    assert reread["persisted"] is True
+    assert reread["preferences"]["pickup_reminders"] is False
+
+
+def test_preferences_patch_merges_into_existing_row():
+    tables = _tables()
+    tables["notification_preferences"] = [_prefs_row(USER_ID, pickup_reminders=False)]
+    client = _client_with(NotifFake(tables))
+    body = client.patch(
+        "/v1/notifications/preferences",
+        json={"preferences": {"order_updates": False}},
+    ).json()
+    assert body["preferences"]["order_updates"] is False
+    # The earlier saved value survives a partial update.
+    assert body["preferences"]["pickup_reminders"] is False
+    assert body["preferences"]["payment_updates"] is True
+
+
+def test_preferences_patch_cannot_touch_another_users_row():
+    tables = _tables()
+    tables["notification_preferences"] = [_prefs_row(OTHER_ID)]
+    fake = NotifFake(tables)
+    client = _client_with(fake)
+    response = client.patch(
+        "/v1/notifications/preferences",
+        json={"preferences": {"pickup_reminders": False}},
+    )
+    assert response.status_code == 200
+    stored = tables["notification_preferences"]
+    assert len(stored) == 2
+    other = next(r for r in stored if r["user_id"] == str(OTHER_ID))
+    assert other["pickup_reminders"] is True
+    own = next(r for r in stored if r["user_id"] == str(USER_ID))
+    assert own["pickup_reminders"] is False
+    # Every preferences query the route made was scoped to
+    # the caller; the other user's row was never selected.
+    assert all(
+        f.get("user_id") == f"eq.{USER_ID}"
+        for _t, _s, f in fake.query_calls
+        if _t == "notification_preferences"
     )
 
 
