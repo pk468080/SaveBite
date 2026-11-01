@@ -53,7 +53,13 @@ export const config = {
     return required("NEXT_PUBLIC_API_BASE_URL", apiBaseUrlValue);
   },
   get siteUrl(): string {
-    return siteUrlValue ?? "http://localhost:3000";
+    // W8: this used to fall back silently to
+    // http://localhost:3000 when unset, which published
+    // localhost canonicals and localhost password-reset
+    // links from production builds. A missing site URL
+    // is a configuration error and must fail loudly,
+    // like every other required client variable.
+    return required("NEXT_PUBLIC_SITE_URL", siteUrlValue);
   },
 };
 
@@ -69,6 +75,9 @@ export function configProblems(): string[] {
   }
   if (!apiBaseUrlValue) {
     problems.push("NEXT_PUBLIC_API_BASE_URL");
+  }
+  if (!siteUrlValue) {
+    problems.push("NEXT_PUBLIC_SITE_URL");
   }
   return problems;
 }
