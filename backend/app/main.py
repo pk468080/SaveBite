@@ -42,6 +42,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     configure_logging(app_settings.log_level)
 
+    # W8: interactive API docs are disabled in production.
+    # /docs, /redoc, and /openapi.json reveal the full
+    # route and parameter surface to unauthenticated
+    # probing; they stay available in development and
+    # staging for debugging.
+    is_production = app_settings.environment == "production"
     app = FastAPI(
         title="SaveBite API",
         version=app_settings.service_version,
@@ -49,6 +55,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "SaveBite surplus-food marketplace API. Customer pickup only; "
             "no delivery in MVP. See docs/architecture.md for boundaries."
         ),
+        docs_url=None if is_production else "/docs",
+        redoc_url=None if is_production else "/redoc",
+        openapi_url=None if is_production else "/openapi.json",
     )
 
     if app_settings.allowed_origins:

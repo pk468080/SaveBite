@@ -37,6 +37,31 @@ const nextConfig: NextConfig = {
         ]
       : [],
   },
+  // W8: minimal security headers. No CSP yet: a content
+  // security policy needs allowlisting for the Razorpay
+  // checkout script and Supabase hosts, which must be
+  // tested against the live checkout flow before it is
+  // added; see docs/w8-production-readiness for the
+  // follow-up. These headers are safe for all routes.
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          {
+            key: "Referrer-Policy",
+            value: "strict-origin-when-cross-origin",
+          },
+          {
+            key: "Strict-Transport-Security",
+            value: "max-age=63072000; includeSubDomains",
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -66,6 +66,29 @@ approval first. A developer linking this repo locally must first run
 token (never committed, never pasted in chat), then verify that the
 remote history still shows the 15 entries above before pushing anything.
 
+## W7 and W8 files — NOT applied to live
+
+These files exist in this directory only. They have never been
+applied to the live project, and this PR does not apply them.
+Apply them in timestamp order, in one release, through the
+approved process (see docs/w8-production-readiness), and
+only then start the notification worker:
+
+- `20261101120000_w7_notification_preferences.sql` (W7)
+- `20261101121000_w7_notification_outbox.sql` (W7)
+- `20261101122000_w7_notification_delivery.sql` (W7)
+- `20261101130000_w8_notification_dedup_per_recipient.sql` (W8:
+  per-recipient dedup keys; without it, multi-recipient
+  events deliver to the first recipient only)
+- `20261101131000_w8_notification_rpc_grants.sql` (W8:
+  service-role-only EXECUTE on the two worker RPCs)
+
+Before applying, verify at apply time: the notifications
+type CHECK against live rows, EXECUTE privileges for
+anon / authenticated / service_role on both worker RPCs,
+and the live storage-bucket policies (not reproduced in
+the baseline SQL).
+
 ## Baseline verification (live counts, 2026-10-31)
 
 The consolidated file was checked against the live database:

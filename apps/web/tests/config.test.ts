@@ -5,6 +5,7 @@ const CLIENT_VARS = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
   "NEXT_PUBLIC_API_BASE_URL",
+  "NEXT_PUBLIC_SITE_URL",
 ] as const;
 
 describe("environment validation", () => {
@@ -31,7 +32,7 @@ describe("environment validation", () => {
     }
     vi.resetModules();
     const fresh = await import("@/lib/config");
-    // With no NEXT_PUBLIC_* values set, all three must
+    // With no NEXT_PUBLIC_* values set, all four must
     // be reported — never silently treated as configured.
     expect(fresh.configProblems()).toEqual(expect.arrayContaining([...CLIENT_VARS]));
   });
