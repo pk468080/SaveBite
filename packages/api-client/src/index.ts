@@ -3,7 +3,18 @@ export type { ApiClientOptions, ApiErrorBody, RequestOptions } from "./client";
 export { createServices } from "./services";
 export type { SaveBiteServices } from "./services";
 export type {
+  AdminActivityEvent,
   AdminDashboard,
+  AdminMerchantDetail,
+  AdminMerchantReviewResponse,
+  AdminMerchantSummary,
+  AdminOrderDetail,
+  AdminOrderSummary,
+  AdminPaymentException,
+  AdminReviewRow,
+  AdminStoreDetail,
+  AdminStoreReviewResponse,
+  AdminStoreSummary,
   CheckoutResponse,
   CurrentUser,
   DietaryValue,

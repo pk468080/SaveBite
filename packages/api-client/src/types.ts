@@ -345,25 +345,209 @@ export interface ListingSummary {
 
 export type MerchantDashboard = MerchantDashboardOverview;
 
+/**
+ * Verified against backend AdminDashboard (M11).
+ * captured_order_value is the sum of order
+ * total_amount where payment_status is captured
+ * only — NOT earnings, NOT net revenue. There
+ * is no customer count: profiles are readable
+ * only by their owner, so the backend cannot
+ * count customers through this API.
+ */
 export interface AdminDashboard {
   merchants_total: number;
   merchants_approved: number;
   merchants_pending_review: number;
   stores_total: number;
   stores_active: number;
+  stores_draft: number;
+  stores_inactive: number;
+  stores_suspended: number;
   listings_total: number;
   listings_published: number;
+  listings_draft: number;
+  listings_paused: number;
+  listings_sold_out: number;
+  listings_expired: number;
   orders_total: number;
+  orders_pending_payment: number;
+  orders_confirmed: number;
+  orders_ready_for_pickup: number;
   orders_collected: number;
+  orders_cancelled_or_expired: number;
   captured_payment_count: number;
   captured_order_value: string;
-  failed_payment_count?: number;
-  pending_payment_count?: number;
-  reconciliation_count?: number;
+  failed_payment_count: number;
+  pending_payment_count: number;
+  reconciliation_required_count: number;
   refund_pending_count: number;
   visible_reviews_total: number;
   average_visible_rating: number | null;
-  recent_orders: OrderSummary[];
+  recent_orders: AdminOrderSummary[];
+}
+
+/** Verified against backend AdminMerchantSummary (M11). */
+export interface AdminMerchantSummary {
+  id: string;
+  legal_name: string;
+  display_name: string;
+  business_type: string;
+  status: string;
+  verification_status: string;
+  store_count: number;
+  created_at: string;
+  approved_at?: string | null;
+}
+
+/** Verified against backend AdminMerchantDetail (M11). */
+export interface AdminMerchantDetail {
+  id: string;
+  legal_name: string;
+  display_name: string;
+  business_type: string;
+  business_email?: string | null;
+  business_phone?: string | null;
+  status: string;
+  verification_status: string;
+  onboarding_notes?: string | null;
+  created_at: string;
+  approved_at?: string | null;
+  stores: AdminStoreSummary[];
+}
+
+/** Verified against backend AdminStoreSummary (M11). */
+export interface AdminStoreSummary {
+  id: string;
+  merchant_id: string;
+  merchant_name: string;
+  name: string;
+  status: string;
+  city: string;
+  pincode: string;
+  listing_count: number;
+  order_count: number;
+  created_at?: string | null;
+}
+
+/** Verified against backend AdminStoreDetail (M11). Hours rows carry weekday numbers only. */
+export interface AdminStoreDetail {
+  id: string;
+  merchant_id: string;
+  merchant_name: string;
+  name: string;
+  status: string;
+  city: string;
+  state: string;
+  pincode: string;
+  address_line_1: string;
+  locality?: string | null;
+  timezone: string;
+  hours: Array<{ weekday: number; opens_at?: string | null; closes_at?: string | null }>;
+  listing_count: number;
+  order_count: number;
+  created_at?: string | null;
+}
+
+/** Verified against backend AdminMerchantReviewResponse (M11). */
+export interface AdminMerchantReviewResponse {
+  merchant_id: string;
+  status: string;
+  verification_status: string;
+}
+
+/** Verified against backend AdminStoreReviewResponse (M11). */
+export interface AdminStoreReviewResponse {
+  store_id: string;
+  activated: boolean;
+}
+
+/** Verified against backend AdminOrderSummary (M11). Flat shape, no customer data. */
+export interface AdminOrderSummary {
+  id: string;
+  order_number: string;
+  store_id: string;
+  store_name: string;
+  merchant_name: string;
+  status: string;
+  payment_status: string;
+  total_amount: string;
+  currency: string;
+  created_at: string;
+}
+
+/** Verified against backend AdminOrderDetail (M11). No customer personal data. */
+export interface AdminOrderDetail {
+  id: string;
+  order_number: string;
+  store_id: string;
+  store_name: string;
+  merchant_name: string;
+  status: string;
+  payment_status: string;
+  total_amount: string;
+  currency: string;
+  pickup_starts_at: string;
+  pickup_ends_at: string;
+  collected_at?: string | null;
+  customer_note?: string | null;
+  items: Array<{ title: string; quantity: number; unit_price: string; line_total: string }>;
+  events: Array<{
+    from_status?: string | null;
+    to_status: string;
+    actor_type: string;
+    reason?: string | null;
+    created_at: string;
+  }>;
+  created_at: string;
+}
+
+/**
+ * Verified against backend AdminPaymentException
+ * (M11). Order-level payment visibility only:
+ * no gateway ids, signatures, or provider
+ * payloads exist in this shape.
+ */
+export interface AdminPaymentException {
+  order_id: string;
+  order_number: string;
+  store_name: string;
+  merchant_name: string;
+  amount: string;
+  currency: string;
+  payment_status: string;
+  order_status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Verified against backend AdminReviewRow (M11).
+ * In practice this list shows visible reviews:
+ * the reviews SELECT policy hides hidden and
+ * under_review rows from platform admins.
+ */
+export interface AdminReviewRow {
+  id: string;
+  store_id: string;
+  store_name: string;
+  rating: number;
+  comment?: string | null;
+  moderation_status: string;
+  created_at: string;
+}
+
+/**
+ * Verified against backend AdminActivityEvent
+ * (M11). Recorded order_status_events only:
+ * private audit logs are not exposed here.
+ */
+export interface AdminActivityEvent {
+  order_number: string;
+  from_status?: string | null;
+  to_status: string;
+  actor_type: string;
+  reason?: string | null;
+  created_at: string;
 }
 
 export interface NotificationItem {

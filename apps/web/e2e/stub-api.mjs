@@ -783,6 +783,251 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify(reviews));
     return;
   }
+  // ---- W6 admin fixtures (M11 shapes) ----
+  // Fixed fixtures, independent of the dynamic
+  // customer orders map, so the admin spec is
+  // deterministic. Review actions mutate the
+  // fixture state, so a detail refetch after a
+  // decision shows the backend's new status —
+  // the portal never updates status locally.
+  const ADMIN_MERCHANT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const ADMIN_ORDER_ID = "99999999-9999-4999-8999-999999999999";
+  const ADMIN_REFUND_ORDER_ID = "88888888-8888-4888-8888-888888888888";
+  if (typeof globalThis.__adminMerchant === "undefined") {
+    globalThis.__adminMerchant = {
+      id: ADMIN_MERCHANT_ID,
+      legal_name: "Sharma Foods Pvt Ltd",
+      display_name: "Sharma Foods",
+      business_type: "bakery",
+      business_email: "hello@sharma.example",
+      business_phone: null,
+      status: "pending_review",
+      verification_status: "pending",
+      onboarding_notes: null,
+      created_at: "2026-10-31T10:00:00+00:00",
+      approved_at: null,
+    };
+    globalThis.__adminStoreStatus = "draft";
+  }
+  const adminMerchant = globalThis.__adminMerchant;
+  const adminStore = {
+    id: STORE_ID,
+    merchant_id: ADMIN_MERCHANT_ID,
+    merchant_name: "Sharma Foods",
+    name: "Sharma Foods",
+    status: globalThis.__adminStoreStatus,
+    city: "New Delhi",
+    state: "Delhi",
+    pincode: "110075",
+    address_line_1: "Shop 1",
+    locality: "Dwarka Sector 7",
+    timezone: "Asia/Kolkata",
+    hours: [{ weekday: 1, opens_at: "09:00", closes_at: "21:00" }],
+    listing_count: 1,
+    order_count: 1,
+    created_at: "2026-10-31T10:00:00+00:00",
+  };
+  const adminOrder = {
+    id: ADMIN_ORDER_ID,
+    order_number: "SB-ADMIN-1",
+    store_id: STORE_ID,
+    store_name: "Sharma Foods",
+    merchant_name: "Sharma Foods",
+    status: "confirmed",
+    payment_status: "captured",
+    total_amount: "195.00",
+    currency: "INR",
+    pickup_starts_at: "2026-10-31T18:00:00+00:00",
+    pickup_ends_at: "2026-10-31T21:00:00+00:00",
+    collected_at: null,
+    customer_note: null,
+    created_at: "2026-10-31T12:00:00+00:00",
+    updated_at: "2026-10-31T12:00:00+00:00",
+  };
+  const adminRefundRow = {
+    order_id: ADMIN_REFUND_ORDER_ID,
+    order_number: "SB-ADMIN-2",
+    store_name: "Sharma Foods",
+    merchant_name: "Sharma Foods",
+    amount: "195.00",
+    currency: "INR",
+    payment_status: "refund_pending",
+    order_status: "refund_pending",
+    created_at: "2026-10-31T11:00:00+00:00",
+    updated_at: "2026-10-31T11:00:00+00:00",
+  };
+  const pageSlice = (rows) => {
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const pageSize = Number(url.searchParams.get("page_size") ?? 20);
+    return {
+      items: rows.slice((page - 1) * pageSize, page * pageSize),
+      total: rows.length,
+      page,
+      page_size: pageSize,
+    };
+  };
+  if (req.method === "GET" && url.pathname === "/v1/admin/dashboard") {
+    res.end(JSON.stringify({
+      merchants_total: 1,
+      merchants_approved: adminMerchant.status === "approved" ? 1 : 0,
+      merchants_pending_review: adminMerchant.status === "pending_review" ? 1 : 0,
+      stores_total: 1,
+      stores_active: globalThis.__adminStoreStatus === "active" ? 1 : 0,
+      stores_draft: globalThis.__adminStoreStatus === "draft" ? 1 : 0,
+      stores_inactive: 0,
+      stores_suspended: 0,
+      listings_total: 1,
+      listings_published: 0,
+      listings_draft: 1,
+      listings_paused: 0,
+      listings_sold_out: 0,
+      listings_expired: 0,
+      orders_total: 1,
+      orders_pending_payment: 0,
+      orders_confirmed: 1,
+      orders_ready_for_pickup: 0,
+      orders_collected: 0,
+      orders_cancelled_or_expired: 0,
+      captured_payment_count: 1,
+      captured_order_value: "195.00",
+      failed_payment_count: 0,
+      pending_payment_count: 0,
+      reconciliation_required_count: 0,
+      refund_pending_count: 1,
+      visible_reviews_total: 1,
+      average_visible_rating: 5,
+      recent_orders: [adminOrder],
+    }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/merchants") {
+    let rows = [{ ...adminMerchant, store_count: 1 }];
+    const status = url.searchParams.get("status");
+    const verification = url.searchParams.get("verification_status");
+    const search = url.searchParams.get("search");
+    if (status) rows = rows.filter((r) => r.status === status);
+    if (verification) rows = rows.filter((r) => r.verification_status === verification);
+    if (search) rows = rows.filter((r) => r.display_name.toLowerCase().includes(search.toLowerCase()));
+    res.end(JSON.stringify(pageSlice(rows)));
+    return;
+  }
+  const adminMerchantMatch = url.pathname.match(/^\/v1\/admin\/merchants\/([^/]+)(\/review)?$/);
+  if (adminMerchantMatch) {
+    if (req.method === "GET" && !adminMerchantMatch[2]) {
+      res.end(JSON.stringify({ ...adminMerchant, stores: [adminStore] }));
+      return;
+    }
+    if (req.method === "POST" && adminMerchantMatch[2]) {
+      const body = await readBody(req);
+      const approved = body.action === "approve";
+      adminMerchant.status = approved ? "approved" : "rejected";
+      adminMerchant.verification_status = approved ? "verified" : "rejected";
+      if (approved) adminMerchant.approved_at = "2026-10-31T13:00:00+00:00";
+      res.end(JSON.stringify({
+        merchant_id: adminMerchant.id,
+        status: adminMerchant.status,
+        verification_status: adminMerchant.verification_status,
+      }));
+      return;
+    }
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/stores") {
+    let rows = [adminStore];
+    const status = url.searchParams.get("status");
+    const city = url.searchParams.get("city");
+    const search = url.searchParams.get("search");
+    if (status) rows = rows.filter((r) => r.status === status);
+    if (city) rows = rows.filter((r) => r.city.toLowerCase().includes(city.toLowerCase()));
+    if (search) rows = rows.filter((r) => r.name.toLowerCase().includes(search.toLowerCase()));
+    res.end(JSON.stringify(pageSlice(rows)));
+    return;
+  }
+  const adminStoreMatch = url.pathname.match(/^\/v1\/admin\/stores\/([^/]+)(\/review)?$/);
+  if (adminStoreMatch) {
+    if (req.method === "GET" && !adminStoreMatch[2]) {
+      res.end(JSON.stringify(adminStore));
+      return;
+    }
+    if (req.method === "POST" && adminStoreMatch[2]) {
+      const body = await readBody(req);
+      globalThis.__adminStoreStatus = body.activate ? "active" : "inactive";
+      res.end(JSON.stringify({ store_id: STORE_ID, activated: body.activate }));
+      return;
+    }
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/orders") {
+    let rows = [adminOrder];
+    const search = url.searchParams.get("order_number");
+    const status = url.searchParams.get("status");
+    const paymentStatus = url.searchParams.get("payment_status");
+    if (search) rows = rows.filter((r) => r.order_number.includes(search));
+    if (status) rows = rows.filter((r) => r.status === status);
+    if (paymentStatus) rows = rows.filter((r) => r.payment_status === paymentStatus);
+    res.end(JSON.stringify(pageSlice(rows)));
+    return;
+  }
+  const adminOrderMatch = url.pathname.match(/^\/v1\/admin\/orders\/([^/]+)$/);
+  if (req.method === "GET" && adminOrderMatch) {
+    res.end(JSON.stringify({
+      ...adminOrder,
+      items: [{ title: "Evening Bakery Bag", quantity: 1, unit_price: "195.00", line_total: "195.00" }],
+      events: [{ from_status: "pending_payment", to_status: "confirmed", actor_type: "system", reason: null, created_at: "2026-10-31T12:00:00+00:00" }],
+    }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/payments") {
+    let rows = [{
+      order_id: adminOrder.id,
+      order_number: adminOrder.order_number,
+      store_name: adminOrder.store_name,
+      merchant_name: adminOrder.merchant_name,
+      amount: adminOrder.total_amount,
+      currency: adminOrder.currency,
+      payment_status: adminOrder.payment_status,
+      order_status: adminOrder.status,
+      created_at: adminOrder.created_at,
+      updated_at: adminOrder.updated_at,
+    }];
+    const paymentStatus = url.searchParams.get("payment_status");
+    if (paymentStatus) rows = rows.filter((r) => r.payment_status === paymentStatus);
+    res.end(JSON.stringify(pageSlice(rows)));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/refunds") {
+    res.end(JSON.stringify(pageSlice([adminRefundRow])));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/reviews") {
+    let rows = [{
+      id: "r-admin-1",
+      store_id: STORE_ID,
+      store_name: "Sharma Foods",
+      rating: 5,
+      comment: "Great thali.",
+      moderation_status: "visible",
+      created_at: "2026-10-31T19:00:00+00:00",
+    }];
+    const rating = url.searchParams.get("rating");
+    const moderation = url.searchParams.get("moderation_status");
+    if (rating) rows = rows.filter((r) => r.rating === Number(rating));
+    if (moderation) rows = rows.filter((r) => r.moderation_status === moderation);
+    res.end(JSON.stringify(pageSlice(rows)));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/v1/admin/activity") {
+    let rows = [{
+      order_number: "SB-ADMIN-1",
+      from_status: "pending_payment",
+      to_status: "confirmed",
+      actor_type: "system",
+      reason: null,
+      created_at: "2026-10-31T12:00:00+00:00",
+    }];
+    const search = url.searchParams.get("order_number");
+    if (search) rows = rows.filter((r) => r.order_number.includes(search));
+    res.end(JSON.stringify(pageSlice(rows)));
+    return;
+  }
   res.writeHead(404);
   res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "Not found", request_id: "e2e" } }));
 });
