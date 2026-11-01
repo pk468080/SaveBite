@@ -1,4 +1,62 @@
+from pydantic import SecretStr
+
+from app.config import Settings, get_settings
 from app.routers import health
+
+
+async def test_postgrest_check_sends_secret_key_header(monkeypatch):
+    _RecordingAsyncClient.instances.clear()
+    monkeypatch.setattr(health.httpx, "AsyncClient", _RecordingAsyncClient)
+    ok = await health.check_supabase_postgrest_health(
+        "https://example.supabase.co", "test-secret-key"
+    )
+    assert ok is True
+    ((url, headers),) = _RecordingAsyncClient.instances[0].calls
+    assert url == "https://example.supabase.co/rest/v1/"
+    assert headers == {"apikey": "test-secret-key"}
+
+
+async def test_postgrest_check_reports_unhealthy_without_secret_key(
+    monkeypatch,
+):
+    _RecordingAsyncClient.instances.clear()
+    monkeypatch.setattr(health.httpx, "AsyncClient", _RecordingAsyncClient)
+    assert (
+        await health.check_supabase_postgrest_health(
+            "https://example.supabase.co", None
+        )
+        is False
+    )
+    assert (
+        await health.check_supabase_postgrest_health("https://example.supabase.co", "")
+        is False
+    )
+    assert _RecordingAsyncClient.instances == []
+
+
+def test_readiness_passes_service_role_key_to_postgrest_check(app, client, monkeypatch):
+    seen: dict[str, str | None] = {}
+
+    async def _auth_ok(url: str, key: str) -> bool:
+        return True
+
+    async def _pg_capture(url: str, key: str | None) -> bool:
+        seen["key"] = key
+        return True
+
+    monkeypatch.setattr(health, "check_supabase_auth_health", _auth_ok)
+    monkeypatch.setattr(health, "check_supabase_postgrest_health", _pg_capture)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        supabase_url="https://zehnhqcfawagxbactvne.supabase.co",
+        supabase_publishable_key="test-publishable-key",
+        supabase_service_role_key=SecretStr("test-secret-key"),
+    )
+    try:
+        response = client.get("/v1/health/ready")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert seen["key"] == "test-secret-key"
 
 
 def test_liveness_needs_no_supabase(client):

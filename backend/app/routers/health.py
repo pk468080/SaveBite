@@ -7,10 +7,14 @@ PostgREST health and reports whether Supabase and the service-role
 key are configured (booleans only, never keys). A failed check
 raises ServiceUnavailableError, which becomes HTTP 503 with the
 standard error envelope, not a 200.
-Both checks send the publishable key as the apikey header: the
-Supabase gateway rejects keyless /auth/v1/* requests with 401
+Both checks send a key as the apikey header: the Supabase
+gateway rejects keyless /auth/v1/* requests with 401
 ("No API key found in request"), verified live 2026-11-01, so a
 keyless auth check could never return 200 against hosted Supabase.
+The PostgREST check sends the secret key, not the publishable key:
+the gateway rejects publishable keys at the PostgREST root endpoint
+with 401 ("Secret API key required"), also verified live 2026-11-01.
+Readiness therefore requires the service-role key for a ready verdict.
 """
 
 from __future__ import annotations
@@ -41,17 +45,26 @@ async def check_supabase_auth_health(supabase_url: str, publishable_key: str) ->
 
 
 async def check_supabase_postgrest_health(
-    supabase_url: str, publishable_key: str
+    supabase_url: str, secret_key: str | None
 ) -> bool:
     """Check PostgREST availability without exposing credentials and
     without reading any data: a request to the PostgREST root with the
-    publishable key should return 200 (OpenAPI) for a healthy service.
-    Any non-200 or transport error counts as unavailable."""
+    secret key should return 200 (OpenAPI) for a healthy service.
+    Any non-200 or transport error counts as unavailable.
+    The secret key is required here: the Supabase gateway rejects
+    publishable keys at the PostgREST root endpoint with 401
+    ("Secret API key required"), verified live 2026-11-01, so a
+    publishable-key probe of this endpoint can never report healthy.
+    A missing secret key therefore means unhealthy, not skipped:
+    readiness now effectively requires the service-role key, which
+    the backend needs for its server-side work in any case."""
+    if not secret_key:
+        return False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
                 f"{supabase_url}/rest/v1/",
-                headers={"apikey": publishable_key},
+                headers={"apikey": secret_key},
             )
         return response.status_code == 200
     except httpx.HTTPError:
@@ -81,8 +94,10 @@ async def readiness(settings: Settings = Depends(get_settings)) -> ReadinessResp
         settings.supabase_url, settings.supabase_publishable_key
     )
     checks["supabase_auth"] = "ok" if auth_ok else "unreachable"
+    secret = settings.supabase_service_role_key
     postgrest_ok = await check_supabase_postgrest_health(
-        settings.supabase_url, settings.supabase_publishable_key
+        settings.supabase_url,
+        secret.get_secret_value() if secret is not None else None,
     )
     checks["postgrest"] = "ok" if postgrest_ok else "unreachable"
     if not auth_ok or not postgrest_ok:
