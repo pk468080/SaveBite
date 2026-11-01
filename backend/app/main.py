@@ -66,7 +66,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_origins=app_settings.allowed_origins,
             allow_credentials=True,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
+            # W9.1: Idempotency-Key is a real frontend header
+            # (reservation + checkout, see packages/api-client).
+            # Without it here, browsers block those POSTs at
+            # preflight even though the backend requires the
+            # header. Origins stay strict: never "*" in
+            # production (enforced by Settings validation).
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                "X-Request-Id",
+                "Idempotency-Key",
+            ],
         )
 
     @app.middleware("http")

@@ -115,6 +115,25 @@ anon / authenticated / service_role on both worker RPCs,
 and the live storage-bucket policies (not reproduced in
 the baseline SQL).
 
+## W9.1 file — NOT applied to live
+
+- `20261101200000_w91_reservation_expiry.sql` (W9.1:
+  tiered, bounded, idempotent expired-reservation
+  cleanup — new `private.release_expired_reservations_v2`
+  plus `public.backend_release_expired_reservations_v2`,
+  service-role-only EXECUTE). This file only records
+  the change; it does not apply anything, repair
+  migration history, or touch the W7/W8/B1/revoke
+  files or the consolidated baseline. Prerequisites:
+  baseline tables only. Postconditions to verify at
+  apply time: both functions exist with the documented
+  signatures, and has_function_privilege shows EXECUTE
+  only for service_role (and the owner) on the public
+  function. The v1 cleanup functions are left intact;
+  the new worker operation
+  (backend/app/reservation_cleanup.py) calls v2, and
+  no worker or scheduler is deployed by this PR.
+
 ## Baseline verification (live counts, 2026-10-31)
 
 The consolidated file was checked against the live database:

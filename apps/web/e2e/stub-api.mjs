@@ -139,6 +139,15 @@ const orders = new Map();
 // idempotency key. The stub mirrors that contract so the
 // retry spec tests the frontend path, not the backend.
 const checkoutOrderByKey = new Map();
+// W9.1 emulation: the real backend replays the SAME order
+// for a repeated reservation with the same idempotency
+// key + contents — even a terminal one — and rejects
+// the same key with different contents. The stub mirrors
+// that contract so the terminal-key spec tests the
+// frontend lifecycle, not the backend. Keys are random
+// per browser context, so no other spec can trip this
+// replay by accident.
+const reservationByKey = new Map();
 const pickupTokens = new Map();
 let pickupTokenSeq = 1;
 const LEGACY_PICKUP_TOKEN = "d".repeat(64);
@@ -298,6 +307,32 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ error: { code: "VALIDATION_ERROR", message: "Idempotency-Key header is required", request_id: "e2e" } }));
       return;
     }
+    // W9.1 replay emulation (see reservationByKey above):
+    // same key + same contents replays the stored order
+    // (terminal ones included); same key + different
+    // contents is a 422, exactly like the backend.
+    const reservationBodyKey = JSON.stringify({ store_id: body.store_id, items: body.items });
+    const prior = reservationByKey.get(req.headers["idempotency-key"]);
+    if (prior) {
+      if (prior.bodyKey !== reservationBodyKey) {
+        res.writeHead(422);
+        res.end(JSON.stringify({ error: { code: "VALIDATION_ERROR", message: "idempotency_key_reused_with_different_request", request_id: "e2e" } }));
+        return;
+      }
+      res.writeHead(201);
+      res.end(JSON.stringify({
+        order_id: prior.order.id,
+        order_number: prior.order.order_number,
+        status: prior.order.status,
+        total_amount: prior.order.total_amount,
+        currency: "INR",
+        reservation_expires_at: prior.order.reservation_expires_at,
+        pickup_starts_at: "2026-10-31T18:00:00+00:00",
+        pickup_ends_at: "2026-10-31T21:00:00+00:00",
+        idempotent_replay: true,
+      }));
+      return;
+    }
     const quantity = body.items?.[0]?.quantity ?? 1;
     const total = (195 * quantity).toFixed(2);
     const expires = new Date(Date.now() + 5 * 60 * 1000).toISOString();
@@ -312,6 +347,7 @@ const server = createServer(async (req, res) => {
     };
     orderSeq += 1;
     orders.set(order.id, order);
+    reservationByKey.set(req.headers["idempotency-key"], { order, bodyKey: reservationBodyKey });
     res.writeHead(201);
     res.end(
       JSON.stringify({
@@ -399,6 +435,21 @@ const server = createServer(async (req, res) => {
       items_preview: [{ title: "Evening Bakery Bag", quantity: order.quantity }],
     }));
     res.end(JSON.stringify({ items, total: items.length, page: 1, page_size: 20 }));
+    return;
+  }
+  // W9.1 test control ONLY (never production code): flip
+  // a stub order to expired so a spec can prove the
+  // frontend recovers from a terminal stored attempt.
+  if (req.method === "POST" && /^\/__e2e__\/orders\/[^/]+\/expire$/.test(url.pathname)) {
+    const order = orders.get(url.pathname.split("/")[3]);
+    if (!order) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "Order not found", request_id: "e2e" } }));
+      return;
+    }
+    order.status = "expired";
+    order.payment_status = "failed";
+    res.end(JSON.stringify({ id: order.id, status: order.status }));
     return;
   }
   if (req.method === "GET" && /^\/v1\/orders\/[^/]+$/.test(url.pathname)) {
