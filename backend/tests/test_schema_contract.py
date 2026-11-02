@@ -79,6 +79,8 @@ def test_no_new_migration_created_for_this_correction():
     # only (not applied to live by the PR), and the
     # worker-RPC revoke migration, also a file only, and
     # the W9.1 reservation-expiry migration, also a file
+    # only (not applied to live by the PR), and the
+    # W9.1.1 cleanup lock-order migration, also a file
     # only (not applied to live by the PR).
     # Any further migration must extend this list
     # deliberately, not slip in unnoticed.
@@ -92,6 +94,7 @@ def test_no_new_migration_created_for_this_correction():
         "20261101180000_b1_checkout_gateway_lookup.sql",
         "20261101190000_notification_worker_rpc_revoke_anon_authenticated.sql",
         "20261101200000_w91_reservation_expiry.sql",
+        "20261102210000_w911_cleanup_lock_order.sql",
     ], f"unexpected migration files: {migration_files}"
     assert "DO NOT APPLY THIS FILE TO THE LIVE PROJECT" in BASELINE.read_text()
 

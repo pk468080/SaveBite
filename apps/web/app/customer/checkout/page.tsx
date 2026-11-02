@@ -14,7 +14,7 @@ import { cartFingerprint } from "@/lib/cart";
 import {
   checkoutKeyFor,
   clearReservationKey,
-  isTerminalOrderStatus,
+  isKnownTerminalOrderStatus,
   reservationKeyFor,
 } from "@/lib/idempotency";
 import { formatINR, formatPickupWindow } from "@/lib/marketplace";
@@ -73,6 +73,13 @@ function CheckoutFlow() {
   const [reservation, setReservation] = useState<ReservationResponse | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [cartSnapshot, setCartSnapshot] = useState<{ title: string; quantity: number }[]>([]);
+  // W9.1.1: outcome of the last countdown-expiry
+  // re-read. While set, the countdown stays hidden: it
+  // already fired once, and re-mounting it on a past
+  // expiry would fire the re-read again in a loop. A
+  // still-payable outcome keeps payment retryable; a
+  // failed outcome shows the retry button below.
+  const [expiryOutcome, setExpiryOutcome] = useState<"payable" | "failed" | null>(null);
   const attemptRef = useRef<string | null>(null);
   const servicesRef = useRef<ReturnType<typeof createServices> | null>(null);
 
@@ -128,11 +135,14 @@ function CheckoutFlow() {
             fingerprint?: string;
           };
           void refreshOrder(parsed.orderId).then((detail) => {
-            if (isTerminalOrderStatus(detail.status)) {
+            if (isKnownTerminalOrderStatus(detail.status)) {
               // Terminal attempt, nothing to re-reserve:
               // drop the stale reference AND its key, so
               // a later same-contents cart reserves fresh
               // instead of replaying this dead order.
+              // W9.1.1: only a KNOWN terminal status
+              // clears; an unrecognized status keeps the
+              // reference and key for a later fresh read.
               sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
               if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
             }
@@ -156,18 +166,27 @@ function CheckoutFlow() {
           const parsed = JSON.parse(stored) as { orderId: string; fingerprint: string };
           if (parsed.fingerprint === fingerprint) {
             const detail = await refreshOrder(parsed.orderId);
-            if (!isTerminalOrderStatus(detail.status)) {
+            if (detail.status === "pending_payment") {
               setPhase("reserved");
               return;
             }
-            // W9.1: the stored attempt is terminal, but the
-            // customer has a live cart with the same
-            // contents. Clear the stale reference AND its
-            // key, then fall through to a fresh
-            // reservation below. Reusing the old key would
-            // make the backend replay this dead order.
-            sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
-            clearReservationKey(fingerprint);
+            if (isKnownTerminalOrderStatus(detail.status)) {
+              // W9.1: the stored attempt is terminal, but the
+              // customer has a live cart with the same
+              // contents. Clear the stale reference AND its
+              // key, then fall through to a fresh
+              // reservation below. Reusing the old key would
+              // make the backend replay this dead order.
+              sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+              clearReservationKey(fingerprint);
+            } else {
+              // W9.1.1: unrecognized status — fail closed.
+              // Keep the reference and the key, show the
+              // order as not-payable, and do NOT create a
+              // fresh reservation for an unknown attempt.
+              setPhase("not-payable");
+              return;
+            }
           }
         } catch {
           sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
@@ -193,14 +212,18 @@ function CheckoutFlow() {
         // A replay carries no expiry: the order detail
         // is authoritative, so always re-read it.
         const detail = await refreshOrder(created.order_id);
-        if (isTerminalOrderStatus(detail.status)) {
-          // Defensive: the create call replayed a terminal
-          // order (a stale key raced the clear above).
-          // Drop the stale attempt so re-adding the same
-          // items can reserve fresh; never keep a dead
-          // order as the active attempt.
-          sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
-          clearReservationKey(fingerprint);
+        if (detail.status !== "pending_payment") {
+          // Defensive: the create call replayed a
+          // non-payable order (a stale key raced the
+          // clear above). Show it as not-payable, never
+          // as payable. Drop the stale attempt only on
+          // a KNOWN terminal status (W9.1.1); an
+          // unrecognized status keeps its key for a
+          // later fresh read.
+          if (isKnownTerminalOrderStatus(detail.status)) {
+            sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+            clearReservationKey(fingerprint);
+          }
           attemptRef.current = null;
           setPhase("not-payable");
           return;
@@ -220,26 +243,65 @@ function CheckoutFlow() {
   const handleExpire = useCallback(() => {
     const id = order?.id ?? reservation?.order_id;
     if (!id) return;
-    const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
-    sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
-    void refreshOrder(id).then((detail) => {
-      // W9.1: the countdown firing proves the reservation
-      // expired — but only a terminal backend status
-      // proves it. A skewed client clock could fire
-      // early while the reservation is still live, so
-      // the key is cleared only on a terminal read;
-      // keeping it lets a refresh replay the live order
-      // instead of duplicating it.
-      if (stored && isTerminalOrderStatus(detail.status)) {
-        try {
-          const parsed = JSON.parse(stored) as { fingerprint?: string };
-          if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
-        } catch {
-          // Stale reference already removed above.
+    // W9.1.1: a local countdown reaching zero is NOT
+    // proof the reservation expired. Nothing stored is
+    // touched until the backend re-read resolves. The
+    // old code removed the reference before the re-read
+    // and always showed "expired": a still-payable
+    // customer lost the recovery path, and a failed
+    // re-read left an unhandled rejection with no retry.
+    void refreshOrder(id).then(
+      (detail) => {
+        if (detail.status === "pending_payment") {
+          // Early client countdown (skewed clock) or a
+          // still-live reservation: preserve the
+          // reference AND the key, keep payment retryable,
+          // and never create a second reservation for
+          // this attempt.
+          setNotice(
+            "The timer ran out early, but the backend confirms your reservation is still open — you can still pay below.",
+          );
+          setExpiryOutcome("payable");
+          setPhase("reserved");
+          return;
         }
-      }
-      setPhase("expired");
-    });
+        if (isKnownTerminalOrderStatus(detail.status)) {
+          // Definite backend status only: drop the
+          // reference AND its key, then show the
+          // terminal state (expired, or not-payable for
+          // any other known terminal status).
+          const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
+          sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
+          if (stored) {
+            try {
+              const parsed = JSON.parse(stored) as { fingerprint?: string };
+              if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
+            } catch {
+              // Stale reference already removed above.
+            }
+          }
+          setPhase(detail.status === "expired" ? "expired" : "not-payable");
+          return;
+        }
+        // Unrecognized status: fail closed. Preserve the
+        // reference and the key, and show the order as
+        // not-payable (no Pay button) until a refresh
+        // proves a payable status. Never clear on a
+        // status this client does not recognize.
+        setPhase("not-payable");
+      },
+      () => {
+        // Re-read failed: preserve the reference AND the
+        // key, show a recoverable error, and let the
+        // customer retry the state refresh below. Never
+        // infer expiry from the local timer alone.
+        setError(
+          "Could not confirm your reservation status. Your reservation and payment retry are preserved — retry the status check below.",
+        );
+        setExpiryOutcome("failed");
+        setPhase("reserved");
+      },
+    );
   }, [order, reservation, refreshOrder]);
 
   async function handlePay() {
@@ -277,12 +339,14 @@ function CheckoutFlow() {
               // reference AND its key, so buying the same
               // items again in this tab reserves fresh
               // instead of replaying this completed order.
-              // The key is cleared only on this definite
-              // backend status, never on a failed verify
-              // (see the catch below, which keeps it).
+              // The key is cleared only on a definite
+              // backend status — W9.1.1 narrows "definite"
+              // to a KNOWN terminal status — never on a
+              // failed verify (see the catch below, which
+              // keeps it).
               const stored = sessionStorage.getItem(ACTIVE_RESERVATION_KEY);
               sessionStorage.removeItem(ACTIVE_RESERVATION_KEY);
-              if (stored && isTerminalOrderStatus(detail.status)) {
+              if (stored && isKnownTerminalOrderStatus(detail.status)) {
                 try {
                   const parsed = JSON.parse(stored) as { fingerprint?: string };
                   if (parsed.fingerprint) clearReservationKey(parsed.fingerprint);
@@ -426,7 +490,7 @@ function CheckoutFlow() {
               Pickup window: {formatPickupWindow(reservation.pickup_starts_at, reservation.pickup_ends_at, "Asia/Kolkata")}
             </p>
           ) : null}
-          {phase === "reserved" && expiresAt ? (
+          {phase === "reserved" && expiresAt && !expiryOutcome ? (
             <ReservationCountdown expiresAt={expiresAt} onExpire={handleExpire} />
           ) : phase === "reserved" && !expiresAt ? (
             <p className="text-sm text-muted-foreground">
@@ -440,6 +504,11 @@ function CheckoutFlow() {
       {phase === "reserved" ? (
         <div className="flex flex-wrap gap-2">
           <Button onClick={handlePay}>Pay with Razorpay</Button>
+          {expiryOutcome === "failed" ? (
+            <Button variant="outline" onClick={handleExpire}>
+              Retry status check
+            </Button>
+          ) : null}
           <Button asChild variant="outline">
             <Link href={`/customer/orders/${order?.id ?? reservation?.order_id}`}>View order</Link>
           </Button>

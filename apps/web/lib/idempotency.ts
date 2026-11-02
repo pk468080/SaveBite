@@ -84,7 +84,40 @@ export function clearReservationKey(cartFingerprint: string): void {
  * would replay a dead order forever. This decision must
  * only ever be fed by a fresh backend order read, never
  * by a timeout, a failed request, or a local timer.
+ *
+ * W9.1.1: that display rule does NOT authorize
+ * clearing. Clearing a reference or key on an
+ * unrecognized status would destroy the recovery path
+ * for an attempt whose status this client simply does
+ * not know yet, so clearing decisions must use
+ * isKnownTerminalOrderStatus below instead.
  */
 export function isTerminalOrderStatus(status: string): boolean {
   return status !== "pending_payment";
+}
+
+/**
+ * W9.1.1: is a backend order status a KNOWN terminal
+ * status for key-clearing purposes? Only the enumerated
+ * statuses below may authorize clearing a reservation
+ * reference or key. An unrecognized status is ambiguous
+ * — it may be a new backend status for a still-live
+ * attempt — so it must fail closed: preserve the
+ * reference and the key, and let a later fresh backend
+ * read decide. Clearing sites in the checkout page must
+ * use this helper; display sites keep using
+ * isTerminalOrderStatus.
+ */
+const KNOWN_TERMINAL_ORDER_STATUSES: ReadonlySet<string> = new Set([
+  "confirmed",
+  "ready_for_pickup",
+  "collected",
+  "expired",
+  "cancelled",
+  "refund_pending",
+  "refunded",
+]);
+
+export function isKnownTerminalOrderStatus(status: string): boolean {
+  return KNOWN_TERMINAL_ORDER_STATUSES.has(status);
 }
