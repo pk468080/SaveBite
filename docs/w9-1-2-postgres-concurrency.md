@@ -1,6 +1,11 @@
 # SaveBite W9.1.2 — PostgreSQL Concurrency Validation
 
-Status: **work in progress — see §10 for what is proven and what is not.**
+Status: **complete — merged as PR #27 (main `12517546`).** All 15
+concurrency tests passed on real PostgreSQL 16.15 and the full backend
+suite was 423 passed at merge; nothing in the recorded test counts or
+results below has been altered. What this document does NOT cover (live
+PostgreSQL 17 execution, the webhook HTTP layer, real Razorpay provider
+calls) is now tracked by W9.1.3 (`docs/w9-1-3-staging-validation.md`).
 
 This document records a genuine PostgreSQL concurrency validation of the
 W9.1 (`20261101200000`) and W9.1.1 (`20261102210000`) reservation-expiry
@@ -313,7 +318,7 @@ is paused) to force the two-transaction overlap deterministically.
 ## 6. Known limitations
 
 - Test PostgreSQL version may differ from live Supabase PostgreSQL 17
-  (record the actual version in §10). The tested mechanics
+  (actual version recorded in §5: PostgreSQL 16.15). The tested mechanics
   (`FOR UPDATE SKIP LOCKED`, EvalPlanQual re-checks, advisory locks,
   deadlock detection) behave the same across supported versions, but
   the version gap is stated, not hidden.
@@ -328,7 +333,7 @@ is paused) to force the two-transaction overlap deterministically.
   executed; fixtures insert orders and reservations directly, which is
   valid because neither tested function depends on it.
 - The residual listing-order deadlock (W9.1.1) is investigated by
-  Test 7; see §8 of the final report for whether it reproduced.
+  Test 7; see Finding 2 in §5.
 
 ## 7. What this task does not change
 
@@ -337,5 +342,7 @@ is paused) to force the two-transaction overlap deterministically.
 - No worker or scheduler is deployed or started.
 - No live Supabase resource, secret, environment variable, or
   configuration is changed.
-- The resulting PR is not merged; the W9.1.1 staging-migration
-  decision stays separate and needs its own approval.
+- The W9.1.1 staging-migration decision stays separate and needs its
+  own approval; this task's PR (#27) was merged by the owner, which
+  merges the validation code and documentation only — it does not apply
+  any migration or deploy anything.
