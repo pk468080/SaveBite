@@ -40,6 +40,18 @@ describe("public layout", () => {
       "/customer",
     );
   });
+
+  it("shows both workspaces as separately labelled links when authenticated", () => {
+    render(<CartProvider><SiteHeader authenticated={true} /></CartProvider>);
+    expect(screen.getByRole("link", { name: "My account" })).toHaveAttribute(
+      "href",
+      "/customer",
+    );
+    expect(screen.getByRole("link", { name: "Merchant dashboard" })).toHaveAttribute(
+      "href",
+      "/merchant",
+    );
+  });
 });
 
 describe("app navigation", () => {

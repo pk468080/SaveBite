@@ -31,7 +31,11 @@ const NAV_LINKS = [
  * Public header. `authenticated` comes from the server
  * layout (real Supabase session), so signed-in visitors
  * see an account entry point instead of Sign in / Get
- * Started. Mobile navigation is a disclosure toggle,
+ * Started. Phase 1 workspace separation: signed-in
+ * visitors see both workspaces as separately labelled
+ * links — "My account" (/customer) and "Merchant
+ * dashboard" (/merchant) — on desktop and mobile.
+ * Mobile navigation is a disclosure toggle,
  * keyboard accessible.
  */
 export function SiteHeader({ authenticated }: { authenticated: boolean }) {
@@ -58,6 +62,9 @@ export function SiteHeader({ authenticated }: { authenticated: boolean }) {
             <>
               <Link href="/customer" className="rounded-md px-3 py-2 text-sm font-medium hover:bg-accent">
                 My account
+              </Link>
+              <Link href="/merchant" className="rounded-md px-3 py-2 text-sm font-medium hover:bg-accent">
+                Merchant dashboard
               </Link>
               <SignOutButton />
             </>
@@ -106,11 +113,18 @@ export function SiteHeader({ authenticated }: { authenticated: boolean }) {
               </Link>
             </li>
             {authenticated ? (
-              <li>
-                <Link href="/customer" className="block rounded-md px-3 py-2 text-sm font-medium hover:bg-accent" onClick={() => setOpen(false)}>
-                  My account
-                </Link>
-              </li>
+              <>
+                <li>
+                  <Link href="/customer" className="block rounded-md px-3 py-2 text-sm font-medium hover:bg-accent" onClick={() => setOpen(false)}>
+                    My account
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/merchant" className="block rounded-md px-3 py-2 text-sm font-medium hover:bg-accent" onClick={() => setOpen(false)}>
+                    Merchant dashboard
+                  </Link>
+                </li>
+              </>
             ) : (
               <>
                 <li>

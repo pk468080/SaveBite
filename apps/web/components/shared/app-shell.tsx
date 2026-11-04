@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AppNav, type NavItem } from "@/components/shared/app-nav";
 import { Brand } from "@/components/shared/site-header";
@@ -10,17 +11,30 @@ import { createClient } from "@/lib/supabase/server";
  * to sign-in. Navigation links are a convenience only
  * — every backend API independently verifies access,
  * so hiding a link never grants or denies anything.
+ *
+ * Phase 1 workspace separation: `title` is the current
+ * workspace ("Customer" or "Merchant") and is shown as
+ * a mode badge in the header, so the two shells never
+ * look identical. `switchHref` / `switchLabel`, when
+ * supplied by a workspace layout, render a clearly
+ * labelled switch button next to Sign Out — switching
+ * workspace changes only which pages are shown, never
+ * what the backend allows.
  */
 export async function AppShell({
   title,
   items,
   children,
   extraCheck,
+  switchHref,
+  switchLabel,
 }: {
   title: string;
   items: NavItem[];
   children: React.ReactNode;
   extraCheck?: () => Promise<void>;
+  switchHref?: string;
+  switchLabel?: string;
 }) {
   const supabase = await createClient();
   const { data } = await supabase.auth.getUser();
@@ -36,6 +50,15 @@ export async function AppShell({
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
           <Brand href="/" />
           <div className="flex items-center gap-3">
+            <span className="rounded-md border px-2 py-1 text-xs font-medium">{title} workspace</span>
+            {switchHref && switchLabel ? (
+              <Link
+                href={switchHref}
+                className="rounded-md px-3 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Switch to {switchLabel}
+              </Link>
+            ) : null}
             <span className="hidden text-sm text-muted-foreground sm:block">{data.user.email}</span>
             <SignOutButton />
           </div>

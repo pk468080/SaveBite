@@ -39,7 +39,12 @@ export default async function MerchantLayout({ children }: { children: React.Rea
   ];
 
   return (
-    <AppShell title="Merchant" items={items}>
+    <AppShell
+      title="Merchant"
+      items={items}
+      switchHref="/customer"
+      switchLabel="Customer account"
+    >
       <MerchantProviders>{children}</MerchantProviders>
     </AppShell>
   );
