@@ -481,8 +481,15 @@ zero regressions.
 Nothing here applies a migration. Each item needs its own owner
 approval before it happens; this checklist is the gate, not the act.
 
-- [ ] §3 `USAGE` migration reviewed, approved, and applied to STAGING
-      only (plus the `PUBLIC` EXECUTE hardening reviewed alongside it).
+- [ ] §3 permission-boundary migration reviewed, approved, and applied
+      to STAGING only: superseded by W9.1.4
+      (`supabase/migrations/20261104120000_w914_rpc_permission_boundary.sql`,
+      docs/w9-1-4-rpc-permission-boundary.md, PR unmerged) — the
+      one-line `USAGE` proposal is NOT the migration to apply; the
+      W9.1.4 migration grants `USAGE` to `authenticated` and
+      `service_role` only, revokes `PUBLIC EXECUTE` on all private
+      functions, and re-grants explicitly per the §7 matrix. This
+      item stays UNCHECKED: nothing here is applied to staging.
 - [ ] W9.1 migration (`20261101200000`) applied to STAGING, then W9.1.1
       (`20261102210000`), in timestamp order, verified by function
       presence + grant checks (service_role only on wrappers).
