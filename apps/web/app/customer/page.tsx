@@ -85,6 +85,21 @@ export default async function CustomerOverviewPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Selling surplus food?</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            This is your customer workspace — your orders, notifications, and profile.
+            Selling is a separate merchant workspace, with its own stores, listings, and orders.
+          </p>
+          <Button asChild variant="outline">
+            <Link href="/merchant">Go to Merchant dashboard</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Recent orders</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">

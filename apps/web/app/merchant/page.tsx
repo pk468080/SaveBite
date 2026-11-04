@@ -117,6 +117,21 @@ export default function MerchantDashboardPage() {
         </div>
       </div>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Shopping as a customer?</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            This is your merchant workspace — your stores, listings, and store orders only.
+            Shopping is a separate customer workspace, with its own cart, reservations, and orders.
+          </p>
+          <Button asChild variant="outline">
+            <Link href="/customer">Go to Customer account</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
       {error ? <Alert variant="error">{error}</Alert> : null}
       {loading ? (
         <LoadingState label="Loading dashboard" />
